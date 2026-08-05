@@ -190,7 +190,7 @@ def render_history_table(
     run: dict[str, Any], state: RunState, events: list[dict[str, Any]]
 ) -> str:
     rows = history_rows(events)
-    headers = ("SEQ", "ITER", "EVENT", "PREVIOUS", "TRIAL", "RETAINED", "DESCRIPTION")
+    headers = ("SEQ", "CAND", "EVENT", "PREVIOUS", "TRIAL", "RETAINED", "DESCRIPTION")
     cells = [
         (
             str(row.seq),
@@ -535,7 +535,7 @@ def render_html_report(
       <h2 id="history-heading">Experiment history</h2>
       <div class="table-wrap" role="region" aria-label="Experiment history table" tabindex="0">
         <table>
-          <thead><tr><th>Iter</th><th>Event</th><th>Previous</th><th>Trial</th><th>Retained</th><th>Description</th><th>Commits</th><th>Logs</th><th>Time</th></tr></thead>
+          <thead><tr><th>Cand</th><th>Event</th><th>Previous</th><th>Trial</th><th>Retained</th><th>Description</th><th>Commits</th><th>Logs</th><th>Time</th></tr></thead>
           <tbody>{''.join(table_rows)}</tbody>
         </table>
       </div>

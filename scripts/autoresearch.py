@@ -1263,6 +1263,41 @@ def block_run(args: argparse.Namespace) -> dict[str, Any]:
     return {"status": "blocked", "reason": event["reason"]}
 
 
+def parallel_status(repo: Path, paths: Paths, run: dict[str, Any], state: RunState) -> dict[str, Any]:
+    """
+    Summarize slots, leases, and bank utilization for status output.
+    Args:
+    repo: Repository root.
+    paths: Resolved run paths.
+    run: Validated run configuration.
+    state: Replayed run state.
+    Return: The parallel section of the status payload.
+    """
+    table = load_slots(paths, run)
+    bank = load_bank(repo)
+    now = time.time()
+    held = held_grants(table)
+    return {
+        "max_parallel": run["parallel"]["max_parallel_resolved"],
+        "bank_capacity": bank_capacity(bank),
+        "grants_held": len(held),
+        "live_by_role": live_roles(table),
+        "unresolved_candidates": list(state.unresolved),
+        "slots": [
+            {
+                "slot": slot["slot"],
+                "state": slot["state"],
+                "candidate": slot["candidate"],
+                "role": slot["role"],
+                "grant": slot["grant"],
+                "agent_ref": slot["agent_ref"],
+                "lease_expired": lease_expired(slot, now=now),
+            }
+            for slot in table["slots"]
+        ],
+    }
+
+
 def show_status(args: argparse.Namespace) -> dict[str, Any]:
     paths = paths_for(args.repo)
     require_git_repo(paths.repo)
@@ -1312,6 +1347,8 @@ def show_status(args: argparse.Namespace) -> dict[str, Any]:
         }
     paths, run, events, state = load_context(args.repo)
     payload = status_payload(paths, run, events, state)
+    payload["parallel"] = parallel_status(paths.repo, paths, run, state)
+    payload["docs"] = recorded_doc_digests(run, events)
     current_head = git_head(paths.repo)
     branch_error: str | None = None
     try:
