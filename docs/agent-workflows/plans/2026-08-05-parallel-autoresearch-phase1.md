@@ -1158,9 +1158,19 @@ Expected: no output. Any hit is leftover dead code or stale documentation.
 wc -l scripts/autoresearch*.py
 ```
 
-Expected: `autoresearch.py` well under its original 1527 lines, and `autoresearch_core.py` under its original 1213.
+Expected: `autoresearch.py` well under its original 1584 lines, and `autoresearch_core.py` under its original 1213.
 
-Measured after Task 6: `autoresearch.py` is 892 lines, down 635. The "1584" figure quoted earlier in this plan and in the design spec was wrong — the file was 1527 lines at the start of the phase.
+Final measurements against the phase baseline at `d65f7c6`:
+
+| Module | Before | After |
+|---|---|---|
+| `autoresearch.py` | 1584 | 894 |
+| `autoresearch_core.py` | 1213 | 671 |
+| `autoresearch_report.py` | 524 | 523 |
+| `autoresearch_state.py` | — | 428 |
+| **Total** | **3321** | **2516** |
+
+An earlier revision of this plan claimed the 1584 baseline was wrong and should read 1527. That correction was itself mistaken: 1584 is the count at the phase baseline, while 1527 was the count Task 6 measured after Task 5 had already deleted from the file.
 
 ---
 
