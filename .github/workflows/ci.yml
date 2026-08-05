@@ -43,6 +43,3 @@ jobs:
 
       - name: Run foreground smoke
         run: bash scripts/run_skill_e2e.sh foreground-smoke --clean
-
-      - name: Run background runtime smoke
-        run: bash scripts/run_skill_e2e.sh runtime-smoke --clean

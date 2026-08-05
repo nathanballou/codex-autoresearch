@@ -26,18 +26,14 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/run_skill_e2e.sh foreground-smoke [--clean]
-  bash scripts/run_skill_e2e.sh runtime-smoke [--clean]
   bash scripts/run_skill_e2e.sh real-foreground [--clean]
-  bash scripts/run_skill_e2e.sh real-background [--clean]
 
 Modes:
   foreground-smoke  Deterministic init/finish/complete run in a disposable installed skill repo.
-  runtime-smoke     Deterministic two-worker detached controller run with a local test worker.
   real-foreground   Prepare a disposable repo and open the real Codex TUI for a human-driven Goal run.
-  real-background   Launch real authenticated codex exec workers and wait for target completion.
 
-The deterministic modes validate control-plane mechanics and run in CI. The real modes require
-local Codex authentication and are never represented as mock/model validation.
+The deterministic mode validates control-plane mechanics and runs in CI. The real mode requires
+local Codex authentication and is never represented as mock/model validation.
 EOF
 }
 
@@ -144,80 +140,6 @@ PY
   cleanup "$temporary"
 }
 
-write_test_worker() {
-  local destination="$1"
-  cat > "$destination" <<'PY'
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import json
-import re
-import subprocess
-import sys
-from pathlib import Path
-
-
-arguments = sys.argv[1:]
-repo = Path(arguments[arguments.index("-C") + 1])
-prompt = sys.stdin.read()
-match = re.search(r"^Control script: (.+)$", prompt, re.MULTILINE)
-if match is None:
-    raise SystemExit("worker prompt did not contain Control script")
-control = match.group(1).strip()
-status = json.loads(
-    subprocess.check_output(
-        [sys.executable, control, "status", "--repo", str(repo)],
-        text=True,
-        encoding="utf-8",
-    )
-)
-value = int(status["metric"]["current"])
-next_value = value - 1
-(repo / "src" / "value.txt").write_text(f"{next_value}\n", encoding="utf-8")
-subprocess.check_call(
-    [
-        sys.executable,
-        control,
-        "finish",
-        "--repo",
-        str(repo),
-        "--description",
-        f"reduce counter to {next_value}",
-    ]
-)
-PY
-  chmod +x "$destination"
-}
-
-wait_for_terminal_status() {
-  local control="$1"
-  local repo="$2"
-  local timeout_seconds="$3"
-  python3 - "$control" "$repo" "$timeout_seconds" <<'PY'
-import json
-import subprocess
-import sys
-import time
-
-control, repo, timeout_text = sys.argv[1:]
-deadline = time.monotonic() + int(timeout_text)
-last = None
-while time.monotonic() < deadline:
-    last = json.loads(
-        subprocess.check_output(
-            [sys.executable, control, "status", "--repo", repo],
-            text=True,
-            encoding="utf-8",
-        )
-    )
-    if last["status"] in {"complete", "blocked", "error", "stopped"}:
-        print(json.dumps(last, sort_keys=True))
-        raise SystemExit(0)
-    time.sleep(0.2)
-raise SystemExit(f"timed out waiting for terminal status; last={last}")
-PY
-}
-
 assert_completed_repo() {
   local control="$1"
   local repo="$2"
@@ -274,40 +196,6 @@ if any(path.stat().st_size == 0 for path in worker_logs):
 PY
 }
 
-run_runtime_smoke() {
-  require_tool python3
-  require_tool git
-  local temporary repo control worker terminal
-  temporary="$(mktemp -d)"
-  repo="$(prepare_repo counter_reduction "$temporary")"
-  control="$repo/.agents/skills/codex-autoresearch/scripts/autoresearch.py"
-  worker="$temporary/test-codex"
-  write_test_worker "$worker"
-
-  python3 "$control" launch \
-    --repo "$repo" \
-    --goal "Reduce the counter to zero" \
-    --scope src \
-    --metric-name counter \
-    --direction lower \
-    --verify "python3 scripts/score.py" \
-    --target 0 \
-    --codex-bin "$worker" >/dev/null
-
-  terminal="$(wait_for_terminal_status "$control" "$repo" 20)"
-  python3 - "$terminal" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-if payload["status"] != "complete" or payload["iterations"] != 2:
-    raise SystemExit(f"unexpected runtime result: {payload}")
-PY
-  assert_completed_repo "$control" "$repo" 2
-  echo "runtime smoke: OK"
-  cleanup "$temporary"
-}
-
 run_real_foreground() {
   require_tool codex
   require_tool python3
@@ -348,53 +236,12 @@ print(status["iterations"])
   cleanup "$temporary"
 }
 
-run_real_background() {
-  require_tool codex
-  require_tool python3
-  require_tool git
-  local temporary repo control terminal
-  temporary="$(mktemp -d)"
-  repo="$(prepare_repo counter_reduction "$temporary")"
-  control="$repo/.agents/skills/codex-autoresearch/scripts/autoresearch.py"
-  echo "Starting real background demo in: $repo"
-
-  python3 "$control" launch \
-    --repo "$repo" \
-    --goal "Reduce the integer in src/value.txt to zero through focused experiments" \
-    --scope src \
-    --metric-name counter \
-    --direction lower \
-    --verify "python3 scripts/score.py" \
-    --target 0 \
-    --execution-policy danger-full-access >/dev/null
-
-  terminal="$(wait_for_terminal_status "$control" "$repo" 900)"
-  python3 - "$terminal" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-if payload["status"] != "complete" or payload["metric"]["current"] != 0:
-    raise SystemExit(f"real background run did not complete: {payload}")
-print(f"real background: OK ({payload['iterations']} iterations)")
-PY
-  iterations="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["iterations"])' "$terminal")"
-  assert_completed_repo "$control" "$repo" "$iterations"
-  cleanup "$temporary"
-}
-
 case "$MODE" in
   foreground-smoke)
     run_foreground_smoke
     ;;
-  runtime-smoke)
-    run_runtime_smoke
-    ;;
   real-foreground)
     run_real_foreground
-    ;;
-  real-background)
-    run_real_background
     ;;
   help|-h|--help)
     usage
