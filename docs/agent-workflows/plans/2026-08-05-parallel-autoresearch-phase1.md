@@ -706,6 +706,14 @@ def paths_for(repo: Path | str) -> Paths:
 
 Delete `load_runtime`, `write_runtime`, and `runtime_snapshot` in full (lines 1093-1183).
 
+- [ ] **Step 4a: Fix the last stale "iteration limit" string**
+
+`autoresearch_core.py:555` raises `"Active event history reached the iteration limit but lacks a stopped event"`. Task 6 renamed the other three user-facing occurrences to "candidate limit" to match `--max-candidates`, but could not touch this file. Change `iteration limit` to `candidate limit` here.
+
+This is an error message, not an event `reason` value, and `derive_state` never compares reason strings — it compares `max_candidates` numerically — so no replay behavior depends on the wording.
+
+Leave the `ITER` column header in `autoresearch_report.py` and the `iteration` event type alone. The event is still literally named `iteration` until a later phase, so renaming those now would trade one inconsistency for a worse one.
+
 - [ ] **Step 5: Trim `status_payload`**
 
 Delete the `"runtime"` and `"runtime_log"` entries. The function ends:
@@ -1146,7 +1154,9 @@ Expected: no output. Any hit is leftover dead code or stale documentation.
 wc -l scripts/autoresearch*.py
 ```
 
-Expected: `autoresearch.py` well under its original 1584 lines, and `autoresearch_core.py` under its original 1213.
+Expected: `autoresearch.py` well under its original 1527 lines, and `autoresearch_core.py` under its original 1213.
+
+Measured after Task 6: `autoresearch.py` is 892 lines, down 635. The "1584" figure quoted earlier in this plan and in the design spec was wrong — the file was 1527 lines at the start of the phase.
 
 ---
 
