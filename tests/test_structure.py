@@ -26,6 +26,7 @@ class StructureTest(unittest.TestCase):
             {
                 "autoresearch.py",
                 "autoresearch_core.py",
+                "autoresearch_docs.py",
                 "autoresearch_report.py",
                 "autoresearch_state.py",
             },

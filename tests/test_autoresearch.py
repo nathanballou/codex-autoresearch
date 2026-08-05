@@ -31,6 +31,10 @@ class AutoresearchTest(unittest.TestCase):
             "raise SystemExit(0 if value != 2 else 9)\n",
             encoding="utf-8",
         )
+        (self.repo / "autoresearch").mkdir()
+        (self.repo / "autoresearch" / "goal.md").write_text(
+            "# Goal\n\nDrive the tracked value to zero.\n", encoding="utf-8"
+        )
         self.git("init", "-b", "main")
         self.git("config", "user.name", "test")
         self.git("config", "user.email", "test@example.com")

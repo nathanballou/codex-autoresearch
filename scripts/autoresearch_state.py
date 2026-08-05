@@ -40,7 +40,9 @@ RUN_KEYS = {
     "target",
     "max_candidates",
     "timeout_seconds",
+    "docs",
 }
+DOCS_KEYS = {"goal_path", "decisions_path", "goal_sha256", "decisions_sha256"}
 METRIC_KEYS = {"name", "direction", "command", "json_key"}
 
 
@@ -78,6 +80,13 @@ def validate_run(payload: Any, *, source: str) -> dict[str, Any]:
     ):
         raise AutoresearchError(f"{source}.guard must be null or a non-empty string")
     parse_decimal(payload["target"], field=f"{source}.target")
+    docs = payload["docs"]
+    if not isinstance(docs, dict):
+        raise AutoresearchError(f"{source}.docs must be an object")
+    require_exact_keys(docs, required=DOCS_KEYS, source=f"{source}.docs")
+    for key in sorted(DOCS_KEYS):
+        if not isinstance(docs[key], str) or not docs[key]:
+            raise AutoresearchError(f"{source}.docs.{key} must be a non-empty string")
     if payload["max_candidates"] is not None and (
         not isinstance(payload["max_candidates"], int)
         or isinstance(payload["max_candidates"], bool)
@@ -128,6 +137,7 @@ EVENT_FIELDS = {
         "log",
         "unresolved_candidates",
     },
+    "decision": {"note", "decisions_sha256"},
     "resumed": {"note", "head", "metric"},
     "stopped": {"reason", "head", "metric", "unresolved_candidates"},
 }

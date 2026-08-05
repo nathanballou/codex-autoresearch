@@ -17,12 +17,14 @@ from typing import Any, Iterable
 
 
 RESULTS_DIR = "autoresearch-results"
+DOCS_DIR = "autoresearch"
 RUN_FILE = "run.json"
 EVENTS_FILE = "events.jsonl"
 PROTECTED_PREFIXES = (
     RESULTS_DIR,
     ".git",
     ".agents/skills/codex-autoresearch",
+    DOCS_DIR,
 )
 
 
@@ -297,10 +299,20 @@ def is_protected(path: str) -> bool:
 
 
 def is_owned_artifact(path: str) -> bool:
+    """
+    Report whether a path is control-plane state rather than experiment subject matter.
+    Args:
+    path: Repository-relative path from git status.
+    Return: True for generated results and for the curated documents the main thread
+    edits between candidates, which must not count as experiment changes.
+    """
     normalized = path.replace("\\", "/")
     if normalized.startswith("./"):
         normalized = normalized[2:]
-    return normalized == RESULTS_DIR or normalized.startswith(RESULTS_DIR + "/")
+    for owned in (RESULTS_DIR, DOCS_DIR):
+        if normalized == owned or normalized.startswith(owned + "/"):
+            return True
+    return False
 
 
 def working_paths(repo: Path) -> list[str]:

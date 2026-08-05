@@ -43,6 +43,7 @@ from autoresearch_core import (
     write_json_atomic,
     write_text_atomic,
 )
+from autoresearch_docs import append_decision, load_and_snapshot, require_docs_match
 from autoresearch_state import (
     SCHEMA_VERSION,
     append_event,
@@ -116,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser = subparsers.add_parser("resume", help="Resume a stopped or blocked run.")
     add_repo_argument(resume_parser)
     resume_parser.add_argument("--note", required=True)
+
+    decide_parser = subparsers.add_parser(
+        "decide", help="Record one curated decision every future candidate will receive."
+    )
+    add_repo_argument(decide_parser)
+    decide_parser.add_argument("--add", required=True, help="Decision or note to append.")
 
     archive_parser = subparsers.add_parser(
         "archive", help="Archive the current run before starting a different one."
@@ -323,6 +330,7 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
             "target": target_json,
             "max_candidates": args.max_candidates,
             "timeout_seconds": args.timeout_seconds,
+            "docs": load_and_snapshot(repo, paths),
         }
         validate_run(run, source="new run")
         write_json_atomic(paths.run, run)
@@ -515,6 +523,24 @@ def safely_restore_after_error(
     )
 
 
+def recorded_doc_digests(run: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, str]:
+    """
+    Resolve the curated document digests currently in force.
+    Args:
+    run: Validated run configuration carrying the digests recorded at init.
+    events: Full validated event list, which may contain later decisions.
+    Return: Mapping of goal_sha256 and decisions_sha256 as last recorded.
+    """
+    digests = {
+        "goal_sha256": run["docs"]["goal_sha256"],
+        "decisions_sha256": run["docs"]["decisions_sha256"],
+    }
+    for event in events:
+        if event["event"] == "decision":
+            digests["decisions_sha256"] = event["decisions_sha256"]
+    return digests
+
+
 def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     paths, run, events, state = load_context(repo)
@@ -529,6 +555,7 @@ def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
             f"Git HEAD changed outside autoresearch: expected {state.head}, got {git_head(repo)}"
         )
     require_no_staged_artifacts(repo)
+    require_docs_match(repo, recorded_doc_digests(run, events))
     changed = working_paths(repo)
     if not changed:
         raise AutoresearchError("No experiment changes found; make one focused change before finish")
@@ -903,6 +930,34 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def record_decision(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Append one curated decision and record it in the event log.
+    Args:
+    args: Parsed CLI arguments carrying the repository and the note to add.
+    Return: Receipt naming the note and the new decisions digest.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    if state.status not in {"active", "blocked", "stopped"}:
+        raise AutoresearchError(f"Cannot record a decision while run status is {state.status}")
+    note, digest = append_decision(repo, paths, args.add)
+    event = append_event(
+        paths,
+        run,
+        events,
+        event="decision",
+        note=note,
+        decisions_sha256=digest,
+    )
+    return {
+        "status": state.status,
+        "note": event["note"],
+        "decisions_sha256": digest,
+        "instruction": "Future candidates receive this note in their worker packet.",
+    }
+
+
 def archive_run(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     paths = paths_for(repo)
@@ -945,6 +1000,8 @@ def main() -> int:
         output = generate_report(args)
     elif args.command == "resume":
         output = resume_run(args)
+    elif args.command == "decide":
+        output = record_decision(args)
     elif args.command == "archive":
         output = archive_run(args)
     else:
