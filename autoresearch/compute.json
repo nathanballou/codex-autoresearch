@@ -1,0 +1,12 @@
+{
+  "cores_per_candidate": 4,
+  "measurement": "parallel",
+  "bank": [
+    {
+      "id": "local",
+      "kind": "cores",
+      "cores": 12,
+      "label": "workstation, 12 of 14 logical cores"
+    }
+  ]
+}

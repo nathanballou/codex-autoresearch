@@ -43,6 +43,7 @@ from autoresearch_core import (
     write_json_atomic,
     write_text_atomic,
 )
+from autoresearch_bank import bank_capacity, compute_path, detect_local_capacity, load_bank
 from autoresearch_docs import append_decision, load_and_snapshot, require_docs_match
 from autoresearch_state import (
     SCHEMA_VERSION,
@@ -117,6 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser = subparsers.add_parser("resume", help="Resume a stopped or blocked run.")
     add_repo_argument(resume_parser)
     resume_parser.add_argument("--note", required=True)
+
+    compute_parser = subparsers.add_parser(
+        "compute", help="Inspect compute capacity. Reports only; never writes."
+    )
+    compute_sub = compute_parser.add_subparsers(dest="compute_command", required=True)
+    detect_parser = compute_sub.add_parser(
+        "detect", help="Report observed local capacity with the provenance of each number."
+    )
+    add_repo_argument(detect_parser)
 
     decide_parser = subparsers.add_parser(
         "decide", help="Record one curated decision every future candidate will receive."
@@ -930,6 +940,32 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def report_compute(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Report observed compute capacity and the declared bank, writing nothing.
+    Args:
+    args: Parsed CLI arguments carrying the repository.
+    Return: Observations, plus the declared bank when one exists.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    payload: dict[str, Any] = {
+        "observed": detect_local_capacity(),
+        "bank_path": str(compute_path(repo)),
+        "instruction": (
+            "Write the bank explicitly from these observations. Nothing is inferred, "
+            "and this command never writes."
+        ),
+    }
+    if compute_path(repo).exists():
+        bank = load_bank(repo)
+        payload["declared"] = bank
+        payload["declared_capacity"] = bank_capacity(bank)
+    else:
+        payload["declared"] = None
+        payload["declared_capacity"] = None
+    return payload
+
+
 def record_decision(args: argparse.Namespace) -> dict[str, Any]:
     """
     Append one curated decision and record it in the event log.
@@ -1000,6 +1036,8 @@ def main() -> int:
         output = generate_report(args)
     elif args.command == "resume":
         output = resume_run(args)
+    elif args.command == "compute":
+        output = report_compute(args)
     elif args.command == "decide":
         output = record_decision(args)
     elif args.command == "archive":
