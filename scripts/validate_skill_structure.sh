@@ -19,6 +19,7 @@ required=(
   "$ROOT/scripts/autoresearch_state.py"
   "$ROOT/scripts/autoresearch_docs.py"
   "$ROOT/scripts/autoresearch_bank.py"
+  "$ROOT/scripts/autoresearch_allocator.py"
 )
 
 for path in "${required[@]}"; do
@@ -41,8 +42,8 @@ if [[ "$reference_count" -ne 2 ]]; then
 fi
 
 runtime_script_count="$(find "$ROOT/scripts" -maxdepth 1 -type f -name 'autoresearch*.py' | wc -l | tr -d ' ')"
-if [[ "$runtime_script_count" -ne 6 ]]; then
-  echo "Expected exactly 6 autoresearch Python modules, found $runtime_script_count" >&2
+if [[ "$runtime_script_count" -ne 7 ]]; then
+  echo "Expected exactly 7 autoresearch Python modules, found $runtime_script_count" >&2
   exit 1
 fi
 
@@ -71,7 +72,8 @@ python3 -m py_compile \
   "$ROOT/scripts/autoresearch_report.py" \
   "$ROOT/scripts/autoresearch_state.py" \
   "$ROOT/scripts/autoresearch_docs.py" \
-  "$ROOT/scripts/autoresearch_bank.py"
+  "$ROOT/scripts/autoresearch_bank.py" \
+  "$ROOT/scripts/autoresearch_allocator.py"
 python3 -m unittest discover -s "$ROOT/tests" -p 'test_structure.py' -q
 
-echo "Skill structure valid: $skill_bytes-byte SKILL.md, 2 references, 6 runtime modules."
+echo "Skill structure valid: $skill_bytes-byte SKILL.md, 2 references, 7 runtime modules."

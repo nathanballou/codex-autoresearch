@@ -56,6 +56,7 @@ copy_skill() {
     "$ROOT/scripts/autoresearch_state.py" \
     "$ROOT/scripts/autoresearch_docs.py" \
     "$ROOT/scripts/autoresearch_bank.py" \
+    "$ROOT/scripts/autoresearch_allocator.py" \
     "$destination/scripts/"
   cp "$ROOT/agents/openai.yaml" "$destination/agents/openai.yaml"
 }
