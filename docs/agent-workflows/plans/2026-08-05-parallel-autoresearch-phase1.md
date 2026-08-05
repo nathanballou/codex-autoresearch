@@ -704,7 +704,11 @@ def paths_for(repo: Path | str) -> Paths:
 
 - [ ] **Step 4: Delete the runtime functions**
 
-Delete `load_runtime`, `write_runtime`, and `runtime_snapshot` in full (lines 1093-1183).
+Delete `load_runtime`, `write_runtime`, and `runtime_snapshot` in full — a contiguous range, lines 1070-1133 as of commit `033d2e0`.
+
+Also delete `process_alive` (lines 977-988). Task 6 removed its last caller when it deleted `archive_run`'s controller-liveness guard, so this change orphaned it. Per the repo convention — remove what your change orphaned, report pre-existing dead code rather than deleting it — it goes now. A later phase that needs PID liveness checking can reintroduce it at that point rather than carrying it unused.
+
+Keep `process_group_alive` and `terminate_process_tree`. Both are still live: `terminate_process_tree` is called from `run_command`'s timeout path at line 853, and it calls `process_group_alive` five times. Keep `os` too — core uses it 19 times for atomic writes.
 
 - [ ] **Step 4a: Fix the last stale "iteration limit" string**
 
