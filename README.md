@@ -46,6 +46,8 @@ Open a clean Git repository with Full Access:
 codex --dangerously-bypass-approvals-and-sandbox
 ```
 
+For V2 supporting workers pinned to Luna at maximum reasoning, complete the [optional terminal runtime and custom-agent setup](docs/INSTALL.md#optional-v2-luna-workers) first.
+
 Then invoke the skill:
 
 ```text
@@ -198,7 +200,7 @@ Use a guard for behavior the metric does not protect, such as a test suite aroun
 
 **Does installation change my Codex settings?**
 
-No. Installation copies the skill files. Use a current Codex release so foreground runs can use the built-in Goal capability.
+No. Installation copies the skill files. Use a current Codex release so foreground runs can use the built-in Goal capability. The optional [V2 Luna worker setup](docs/INSTALL.md#optional-v2-luna-workers) is manual and separate from skill installation.
 
 **Why Full Access?**
 
