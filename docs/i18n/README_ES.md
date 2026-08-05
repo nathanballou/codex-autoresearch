@@ -28,7 +28,7 @@ Después invoca:
 $autoresearch reduce error_count de `python3 scripts/score.py` a 0
 ```
 
-Antes de escribir, Codex confirma el objetivo, el alcance, la línea base, la meta, el comando de medida, el guard opcional y foreground/background.
+Antes de escribir, Codex confirma el objetivo, el alcance, la línea base, la meta, el comando de medida, el guard opcional y la concurrencia.
 
 ## Bucle
 
@@ -43,16 +43,17 @@ examinar -> cambiar una hipótesis -> commit y medida
 
 Codex decide las hipótesis y modifica el código. El script de control posee los límites Git, la medida, el rollback y el estado.
 
-## Foreground y Background
+## Candidatos en paralelo
 
-| | Foreground | Background |
-|---|---|---|
-| Ejecución | Tarea Codex actual | Controller separado |
-| Continuidad | Goal oficial de Codex | Un worker `codex exec` por iteración |
-| Uso | Observar y dirigir | Ejecuciones largas o nocturnas |
-| Control | Pausa/reanudación del Goal | Status/stop/resume con `$autoresearch` |
+| | |
+|---|---|
+| Aislamiento | Un worktree de Git de larga vida por slot |
+| Asignación | Reparto adaptativo entre profundizar en el mejor resultado y probar ideas nuevas |
+| Cómputo | Un banco declarado de núcleos y máquinas completas; cada candidato recibe una concesión |
+| Admisión | Serializada; un candidato con base obsoleta se rebasa y se vuelve a medir |
+| Vigencia | Leases, porque el plano de control no posee los procesos de los workers |
 
-Foreground continúa mediante el Goal oficial. Background no crea un Goal; el controller mantiene la ejecución. La instalación no cambia la configuración de Codex.
+Cada worker recibe el mismo objetivo general y las mismas decisiones curadas, además de su propio objetivo individual. Un host que no pueda lanzar subagentes concurrentes reclama un slot cada vez y degrada a ejecución secuencial con el mismo modelo de estado.
 
 ## Resultados
 
@@ -63,8 +64,8 @@ Los archivos no confirmados viven en `autoresearch-results/`:
 | `run.json` | Configuración confirmada e inmutable |
 | `events.jsonl` | Historial de estado de solo anexado |
 | `logs/` | Salida completa de métricas, guards y workers |
-| `runtime.json` | Estado del proceso background |
-| `runtime.log` | Ciclo de vida del controller |
+| `slots.json` | Estado de slots, leases y concesiones de cómputo |
+| `docs/` | Instantáneas de los documentos curados |
 
 `events.jsonl` es la única fuente del estado. Los datos ausentes, dañados o contradictorios producen un error explícito; nunca se reconstruyen por aproximación.
 

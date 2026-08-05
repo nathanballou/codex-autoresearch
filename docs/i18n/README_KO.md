@@ -28,7 +28,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 $autoresearch `python3 scripts/score.py`의 error_count를 0으로 줄여줘
 ```
 
-첫 쓰기 전에 목표, 수정 범위, 기준값, 목표값, 측정 명령, 선택적 guard, foreground/background를 확인합니다.
+첫 쓰기 전에 목표, 수정 범위, 기준값, 목표값, 측정 명령, 선택적 guard, 동시 실행 수를 확인합니다.
 
 ## 동작 방식
 
@@ -43,16 +43,17 @@ $autoresearch `python3 scripts/score.py`의 error_count를 0으로 줄여줘
 
 Codex는 가설과 코드 수정을 담당하고, 제어 스크립트는 Git 경계, 측정, 롤백, 상태를 담당합니다.
 
-## Foreground와 Background
+## 병렬 후보
 
-| | Foreground | Background |
-|---|---|---|
-| 실행 위치 | 현재 Codex 작업 | 분리된 controller |
-| 지속 실행 | 공식 Codex Goal | 반복마다 하나의 `codex exec` worker |
-| 용도 | 실시간 관찰과 지시 | 장시간 또는 야간 실행 |
-| 제어 | Goal pause/resume | `$autoresearch` status/stop/resume |
+| | |
+|---|---|
+| 격리 | 슬롯마다 하나의 장기 Git 워크트리 |
+| 배분 | 최고 결과 심화와 새로운 아이디어 시도 사이의 적응적 분배 |
+| 컴퓨트 | 선언된 코어와 전체 머신의 뱅크. 각 후보에 할당을 부여 |
+| 승인 | 직렬화. 기준이 오래된 후보는 리베이스 후 재측정 |
+| 생존 확인 | 리스 방식. 제어 평면은 워커 프로세스를 소유하지 않음 |
 
-Foreground는 공식 Goal로 계속 실행됩니다. Background는 Goal 없이 controller가 지속 실행합니다. 설치 과정에서 Codex 설정은 변경되지 않습니다.
+모든 워커는 동일한 전체 목표와 정리된 결정 사항, 그리고 자신의 개별 목표를 받습니다. 동시 서브에이전트를 실행할 수 없는 호스트는 한 번에 한 슬롯만 확보하여 동일한 상태 모델로 순차 실행됩니다.
 
 ## 결과
 
@@ -63,8 +64,8 @@ Foreground는 공식 Goal로 계속 실행됩니다. Background는 Goal 없이 c
 | `run.json` | 확인된 불변 설정 |
 | `events.jsonl` | 추가 전용 상태 및 감사 기록 |
 | `logs/` | 측정, guard, worker 전체 출력 |
-| `runtime.json` | 백그라운드 프로세스 상태 |
-| `runtime.log` | controller 수명 주기 이벤트 |
+| `slots.json` | 슬롯 생존 상태, 리스, 사용 중인 컴퓨트 할당 |
+| `docs/` | 정리된 문서의 스냅샷 |
 
 `events.jsonl`이 유일한 실행 상태입니다. 누락, 손상, 충돌이 있으면 추측해 복구하지 않고 명확하게 실패합니다.
 

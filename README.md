@@ -59,9 +59,9 @@ Codex: Baseline: 5
        Scope: src/
        Verify: python3 scripts/score.py, JSON key error_count
        Guard: python3 -m pytest -q
-       Run in foreground or background?
+       Parallel: 3 candidates from the compute bank
 
-You:   Background. Go.
+You:   Go.
 ```
 
 Codex launches the confirmed run. No Codex configuration changes or special prompt syntax are required.
@@ -88,16 +88,23 @@ repeat until target
 
 The control script owns commits, verification, rollback, and state. Codex owns the hypotheses and code changes.
 
-## Foreground And Background
+## Parallel Candidates
 
-| | Foreground | Background |
-|---|---|---|
-| Runs in | Current Codex task | Detached controller |
-| Continuation | Official Codex Goal | One `codex exec` worker per iteration |
-| Best for | Watching and steering live | Long or overnight runs |
-| Control | Codex Goal pause/resume | Ask `$autoresearch` for status, stop, or resume |
+Candidates run in parallel by default. The coordinator claims slots, spawns one
+subagent per slot using its own host's primitive, and refills each slot as its worker
+returns.
 
-Foreground and background use the same experiment rules. A run uses one mode at a time. Foreground continuation uses a Codex Goal; background continuation belongs to the detached controller.
+| | |
+|---|---|
+| Isolation | One long-lived Git worktree per slot |
+| Allocation | Adaptive split between deepening the best result and trying new ideas |
+| Compute | A declared bank of cores and whole machines; each candidate gets a grant |
+| Admission | Serialized; a candidate whose base went stale is rebased and re-measured |
+| Liveness | Leases, because the control plane does not own worker processes |
+
+Every worker receives the same curated overarching goal and decisions, plus its own
+individual target. A host that cannot spawn concurrent subagents claims one slot at a
+time and degrades to sequential execution against the identical state model.
 
 ## What Gets Confirmed
 
@@ -107,8 +114,8 @@ Before the first write, Codex shows:
 - repository-relative paths it may change;
 - the metric command and explicit parser;
 - an optional regression guard;
-- foreground or background mode;
-- an optional iteration limit.
+- the concurrency, worktree root, and lease;
+- an optional candidate limit.
 
 Initialization requires a clean named Git branch. One run manages one repository.
 
@@ -119,10 +126,10 @@ Run artifacts live in `autoresearch-results/` and stay uncommitted:
 | Path | Purpose |
 |---|---|
 | `run.json` | Immutable confirmed configuration |
-| `events.jsonl` | Append-only baseline, iteration, stop, and completion history |
-| `logs/` | Full metric, guard, and background worker output |
-| `runtime.json` | Background process state |
-| `runtime.log` | Background controller lifecycle events |
+| `events.jsonl` | Append-only baseline, candidate, stop, and completion history |
+| `logs/` | Full metric and guard output |
+| `slots.json` | Slot liveness, leases, and outstanding compute grants |
+| `docs/` | Content-addressed snapshots of the curated documents |
 | `report.html` | Optional, regenerated visual snapshot |
 
 `events.jsonl` is the state history. Missing, malformed, contradictory, or partial state is an error; the skill never guesses a result from old files or conversational memory.
@@ -204,11 +211,11 @@ No. Installation copies the skill files. Use a current Codex release so foregrou
 
 **Why Full Access?**
 
-Each iteration creates or reverts a Git commit. Restricted sandboxes may block writes under `.git`. Background runs therefore default to Full Access; `workspace-write` remains an explicit option when its limitations are acceptable.
+Each candidate creates a Git commit and the control plane manages worktrees. Restricted sandboxes may block writes under `.git`, so Full Access is the reliable choice; `workspace-write` remains an explicit option when its limitations are acceptable.
 
 **Can I stop and resume?**
 
-Yes. Interrupt or pause a foreground Goal. For background, invoke `$autoresearch` and ask for status, stop, or resume with a new direction.
+Yes. Interrupt or pause the Goal, then ask `$autoresearch` for status or resume with a new direction. A worker that dies mid-flight is reported by `reconcile` and cleared with `reap`.
 
 **Can it run without Git or across several repos?**
 

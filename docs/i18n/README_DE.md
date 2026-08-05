@@ -28,7 +28,7 @@ Dann aufrufen:
 $autoresearch error_count aus `python3 scripts/score.py` auf 0 senken
 ```
 
-Vor dem ersten Schreibzugriff bestätigt Codex Ziel, Bereich, Ausgangswert, Zielwert, Messbefehl, optionalen Guard und foreground/background.
+Vor dem ersten Schreibzugriff bestätigt Codex Ziel, Bereich, Ausgangswert, Zielwert, Messbefehl, optionalen Guard und die Nebenläufigkeit.
 
 ## Schleife
 
@@ -43,16 +43,17 @@ Evidenz prüfen -> eine Hypothese ändern -> Commit und Messung
 
 Codex verantwortet Hypothesen und Codeänderungen. Das Kontrollskript verantwortet Git-Grenzen, Messung, Rollback und Zustand.
 
-## Foreground und Background
+## Parallele Kandidaten
 
-| | Foreground | Background |
-|---|---|---|
-| Ausführung | Aktuelle Codex-Aufgabe | Separater Controller |
-| Fortsetzung | Offizielles Codex Goal | Ein `codex exec` Worker pro Iteration |
-| Geeignet für | Live beobachten und lenken | Lange oder nächtliche Läufe |
-| Steuerung | Goal pausieren/fortsetzen | Status/stop/resume mit `$autoresearch` |
+| | |
+|---|---|
+| Isolierung | Ein langlebiger Git-Worktree pro Slot |
+| Zuteilung | Adaptive Aufteilung zwischen Vertiefen des besten Ergebnisses und neuen Ideen |
+| Rechenleistung | Eine deklarierte Bank aus Kernen und ganzen Maschinen; jeder Kandidat erhält eine Zuweisung |
+| Aufnahme | Serialisiert; ein Kandidat mit veralteter Basis wird rebased und neu gemessen |
+| Lebendigkeit | Leases, da die Steuerebene die Worker-Prozesse nicht besitzt |
 
-Foreground wird durch das offizielle Goal fortgesetzt. Background erstellt kein Goal; der Controller setzt den Lauf fort. Die Installation ändert keine Codex-Einstellungen.
+Jeder Worker erhält dasselbe übergreifende Ziel und dieselben kuratierten Entscheidungen sowie sein eigenes individuelles Ziel. Ein Host ohne nebenläufige Subagenten belegt einen Slot nach dem anderen und fällt auf sequenzielle Ausführung mit identischem Zustandsmodell zurück.
 
 ## Ergebnisse
 
@@ -63,8 +64,8 @@ Nicht eingecheckte Dateien liegen unter `autoresearch-results/`:
 | `run.json` | Bestätigte, unveränderliche Konfiguration |
 | `events.jsonl` | Nur angehängte Zustands- und Audit-Historie |
 | `logs/` | Vollständige Mess-, Guard- und Worker-Ausgaben |
-| `runtime.json` | Background-Prozesszustand |
-| `runtime.log` | Controller-Lebenszyklus |
+| `slots.json` | Slot-Status, Leases und offene Rechenzuweisungen |
+| `docs/` | Momentaufnahmen der kuratierten Dokumente |
 
 `events.jsonl` ist die einzige Zustandsquelle. Fehlende, beschädigte oder widersprüchliche Daten führen zu einem klaren Fehler und werden nicht erraten oder rekonstruiert.
 

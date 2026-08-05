@@ -28,7 +28,7 @@ Puis lancez :
 $autoresearch réduire error_count de `python3 scripts/score.py` à 0
 ```
 
-Avant toute écriture, Codex confirme l'objectif, le périmètre, la mesure initiale, la cible, la commande, le guard facultatif et le mode foreground/background.
+Avant toute écriture, Codex confirme l'objectif, le périmètre, la mesure initiale, la cible, la commande, le guard facultatif et la concurrence.
 
 ## Boucle
 
@@ -43,16 +43,17 @@ examiner -> modifier une hypothèse -> commit et mesure
 
 Codex choisit les hypothèses et modifie le code. Le script de contrôle possède les limites Git, la mesure, le rollback et l'état.
 
-## Foreground et Background
+## Candidats parallèles
 
-| | Foreground | Background |
-|---|---|---|
-| Exécution | Tâche Codex actuelle | Controller détaché |
-| Continuité | Goal Codex officiel | Un worker `codex exec` par itération |
-| Usage | Observation et pilotage | Exécutions longues ou nocturnes |
-| Contrôle | Pause/reprise du Goal | Status/stop/resume via `$autoresearch` |
+| | |
+|---|---|
+| Isolation | Un worktree Git durable par slot |
+| Répartition | Partage adaptatif entre approfondir le meilleur résultat et tenter de nouvelles idées |
+| Calcul | Une banque déclarée de cœurs et de machines entières ; chaque candidat reçoit une allocation |
+| Admission | Sérialisée ; un candidat dont la base a bougé est rebasé puis remesuré |
+| Vivacité | Des baux, car le plan de contrôle ne possède pas les processus des workers |
 
-Foreground continue grâce au Goal officiel. Background n'utilise pas de Goal ; le controller assure la continuité. L'installation ne modifie aucun réglage Codex.
+Chaque worker reçoit le même objectif global et les mêmes décisions curées, ainsi que sa cible individuelle. Un hôte incapable de lancer des sous-agents concurrents réclame un slot à la fois et se réduit à une exécution séquentielle sur le même modèle d'état.
 
 ## Résultats
 
@@ -63,8 +64,8 @@ Les fichiers non commités se trouvent dans `autoresearch-results/` :
 | `run.json` | Configuration confirmée et immuable |
 | `events.jsonl` | Historique d'état en ajout seul |
 | `logs/` | Sorties complètes des mesures, guards et workers |
-| `runtime.json` | État du processus background |
-| `runtime.log` | Cycle de vie du controller |
+| `slots.json` | État des slots, baux et allocations de calcul en cours |
+| `docs/` | Instantanés des documents curés |
 
 `events.jsonl` est l'unique source d'état. Un fichier manquant, corrompu ou contradictoire provoque une erreur explicite ; aucune reconstruction approximative n'est tentée.
 

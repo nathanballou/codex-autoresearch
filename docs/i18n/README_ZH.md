@@ -28,7 +28,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 $autoresearch 把 `python3 scripts/score.py` 的 error_count 降到 0
 ```
 
-Codex 会在首次写入前确认：目标、可修改范围、当前值、目标值、指标命令、可选 guard，以及 foreground 或 background。
+Codex 会在首次写入前确认：目标、可修改范围、当前值、目标值、指标命令、可选 guard，以及并行候选数。
 
 ## 工作方式
 
@@ -43,16 +43,17 @@ Codex 会在首次写入前确认：目标、可修改范围、当前值、目�
 
 Codex 负责分析和改代码；控制脚本负责 Git 边界、测量、回滚和状态。
 
-## 前台与后台
+## 并行候选
 
-| | Foreground | Background |
-|---|---|---|
-| 运行位置 | 当前 Codex 任务 | 独立 controller |
-| 持续运行 | Codex 官方 Goal | 每轮一个 `codex exec` worker |
-| 适合 | 实时观察和指导 | 长时间或通宵运行 |
-| 控制 | Goal 的暂停/恢复 | 用 `$autoresearch` 查询、停止、恢复 |
+| | |
+|---|---|
+| 隔离 | 每个槽位一个长期存在的 Git 工作树 |
+| 分配 | 在深化当前最优结果与尝试全新思路之间自适应分配 |
+| 算力 | 声明式的核心与整机资源库；每个候选获得一份配额 |
+| 准入 | 串行化；基点过期的候选会变基后重新测量 |
+| 存活 | 采用租约，因为控制平面并不拥有工作进程 |
 
-Foreground 由 Codex 官方 Goal 持续运行。Background 不创建 Goal，由 controller 负责持续运行。安装不会修改 Codex 配置。
+每个工作代理都会收到相同的总体目标与已整理的决策，以及各自的具体目标。无法并发启动子代理的宿主会一次占用一个槽位，退化为顺序执行，状态模型完全相同。
 
 ## 结果文件
 
@@ -63,8 +64,8 @@ Foreground 由 Codex 官方 Goal 持续运行。Background 不创建 Goal，由 
 | `run.json` | 不可变的已确认配置 |
 | `events.jsonl` | 仅追加的基线、实验和终止记录 |
 | `logs/` | 完整的指标、guard 和 worker 输出 |
-| `runtime.json` | 后台进程状态 |
-| `runtime.log` | 后台 controller 事件 |
+| `slots.json` | 槽位存活状态、租约与在用算力配额 |
+| `docs/` | 已整理文档的内容寻址快照 |
 
 `events.jsonl` 是运行状态的唯一事实来源。缺失、损坏或矛盾的状态会直接报错，不会从旧文件或对话内容里猜测恢复。
 
