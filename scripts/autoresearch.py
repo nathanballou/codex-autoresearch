@@ -70,7 +70,7 @@ def add_repo_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repo", required=True, help="Absolute or relative Git repository root.")
 
 
-def add_run_arguments(parser: argparse.ArgumentParser, *, background: bool) -> None:
+def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     add_repo_argument(parser)
     parser.add_argument("--goal", required=True)
     parser.add_argument(
@@ -85,17 +85,8 @@ def add_run_arguments(parser: argparse.ArgumentParser, *, background: bool) -> N
     parser.add_argument("--metric-key", help="Read the metric from this key in a final-line JSON object.")
     parser.add_argument("--target", required=True)
     parser.add_argument("--guard", help="Regression command; exit code 0 means pass.")
-    parser.add_argument("--max-iterations", type=int)
+    parser.add_argument("--max-candidates", type=int)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
-    if background:
-        parser.add_argument(
-            "--execution-policy",
-            choices=["danger-full-access", "workspace-write"],
-            default="danger-full-access",
-            help="Permission policy for background codex exec workers.",
-        )
-        parser.add_argument("--codex-bin", default="codex")
-        parser.add_argument("--model")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,13 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="Validate and initialize a foreground run.")
-    add_run_arguments(init_parser, background=False)
-    init_parser.set_defaults(mode="foreground")
+    init_parser = subparsers.add_parser("init", help="Validate and initialize a run.")
+    add_run_arguments(init_parser)
 
     launch_parser = subparsers.add_parser("launch", help="Initialize and detach a background run.")
-    add_run_arguments(launch_parser, background=True)
-    launch_parser.set_defaults(mode="background")
+    add_run_arguments(launch_parser)
 
     finish_parser = subparsers.add_parser(
         "finish", help="Commit, verify, and keep or revert one focused experiment."
@@ -267,8 +256,6 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
     verify = args.verify.strip()
     metric_key = None if args.metric_key is None else args.metric_key.strip()
     guard = None if args.guard is None else args.guard.strip()
-    codex_bin: str | None = None
-    model: str | None = None
     if not goal:
         raise AutoresearchError("--goal cannot be empty")
     if not metric_name:
@@ -279,19 +266,8 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
         raise AutoresearchError("--metric-key cannot be empty")
     if args.guard is not None and not guard:
         raise AutoresearchError("--guard cannot be empty")
-    if args.mode == "background":
-        codex_bin = args.codex_bin.strip()
-        model = None if args.model is None else args.model.strip()
-        if not codex_bin:
-            raise AutoresearchError("--codex-bin cannot be empty")
-        if args.model is not None and not model:
-            raise AutoresearchError("--model cannot be empty")
-        resolved_codex = shutil.which(codex_bin)
-        if resolved_codex is None:
-            raise AutoresearchError(f"Background Codex executable was not found: {codex_bin}")
-        codex_bin = str(Path(resolved_codex).resolve())
-    if args.max_iterations is not None and args.max_iterations <= 0:
-        raise AutoresearchError("--max-iterations must be a positive integer")
+    if args.max_candidates is not None and args.max_candidates <= 0:
+        raise AutoresearchError("--max-candidates must be a positive integer")
     if args.timeout_seconds <= 0:
         raise AutoresearchError("--timeout-seconds must be a positive integer")
     target = parse_decimal(args.target, field="--target")
@@ -355,7 +331,6 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
             "created_at": utc_now(),
             "repo": str(repo),
             "branch": branch,
-            "mode": args.mode,
             "goal": goal,
             "scope": scopes,
             "metric": {
@@ -366,17 +341,8 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
             },
             "guard": guard,
             "target": target_json,
-            "max_iterations": args.max_iterations,
+            "max_candidates": args.max_candidates,
             "timeout_seconds": args.timeout_seconds,
-            "background": (
-                {
-                    "execution_policy": args.execution_policy,
-                    "codex_bin": codex_bin,
-                    "model": model,
-                }
-                if args.mode == "background"
-                else None
-            ),
         }
         validate_run(run, source="new run")
         write_json_atomic(paths.run, run)
@@ -407,7 +373,6 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
             status = "complete"
         return {
             "run_id": run_id,
-            "mode": args.mode,
             "status": status,
             "baseline": decimal_json(baseline),
             "target": target_json,
@@ -710,7 +675,7 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
         )
         events.append(complete)
         status = "complete"
-    elif run["max_iterations"] is not None and iteration >= run["max_iterations"]:
+    elif run["max_candidates"] is not None and iteration >= run["max_candidates"]:
         stopped = append_event(
             paths,
             run,
@@ -731,7 +696,7 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
         "retained_metric": decimal_json(retained_metric),
         "target": run["target"],
         "head": head,
-        "instruction": "Iteration recorded. Exit this worker now." if run["mode"] == "background" else "Continue with the next distinct experiment unless complete.",
+        "instruction": "Continue with the next distinct experiment unless complete.",
     }
 
 
@@ -963,8 +928,6 @@ def record_controller_error(repo: Path, reason: str, log: Path | None = None) ->
 
 def run_controller(repo: Path) -> int:
     paths, run, events, state = load_context(repo)
-    if run["mode"] != "background":
-        raise AutoresearchError("Controller can only run a background autoresearch run")
     if state.status != "active":
         return 0
 
@@ -1279,8 +1242,6 @@ def fail_controller_spawn(paths: Paths, reason: str) -> NoReturn:
 
 def spawn_controller(repo: Path) -> dict[str, Any]:
     paths, run, _, state = load_context(repo)
-    if run["mode"] != "background":
-        raise AutoresearchError("Only background runs can start a detached controller")
     if state.status != "active":
         return {"status": state.status, "controller_pid": None}
     if paths.stop_request.exists():
@@ -1411,8 +1372,6 @@ def launch_background(args: argparse.Namespace) -> dict[str, Any]:
 def stop_background(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     paths, run, events, state = load_context(repo)
-    if run["mode"] != "background":
-        raise AutoresearchError("Foreground runs are paused or cleared with Codex Goal controls")
     if state.status != "active":
         return {"status": state.status, "message": "Run is not active"}
     runtime = load_runtime(paths, run_id=run["run_id"])
@@ -1462,7 +1421,7 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
         raise AutoresearchError("--note cannot be empty")
     if state.status == "complete":
         raise AutoresearchError("A completed run cannot be resumed; archive it and start a new goal")
-    if run["max_iterations"] is not None and state.iterations >= run["max_iterations"]:
+    if run["max_candidates"] is not None and state.iterations >= run["max_candidates"]:
         raise AutoresearchError(
             "The configured iteration limit has been reached; archive this run and confirm a new limit"
         )
@@ -1476,21 +1435,7 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
             "then archive this run after manual recovery; it cannot be resumed from an unverified commit."
         )
     if state.status == "active":
-        if run["mode"] == "background":
-            runtime = load_runtime(paths, run_id=run["run_id"])
-            if runtime:
-                if process_alive(runtime["controller_pid"] or 0):
-                    raise AutoresearchError("Background run is already active")
-                if process_alive(runtime["child_pid"] or 0):
-                    raise AutoresearchError(
-                        f"Cannot resume while orphaned worker PID {runtime['child_pid']} is alive"
-                    )
-            raise AutoresearchError(
-                "Background event state is still active but its controller is gone. "
-                "Run stop to close the orphaned state before resume."
-            )
-        else:
-            raise AutoresearchError("Foreground run is already active")
+        raise AutoresearchError("Foreground run is already active")
     require_clean_repo(repo, expected_head=state.head, expected_branch=run["branch"])
     if paths.stop_request.exists():
         consume_stop_request(paths, run)
@@ -1503,8 +1448,6 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
         head=state.head,
         metric=decimal_json(state.metric),
     )
-    if run["mode"] == "background":
-        return {"note": event["note"], **spawn_controller(repo)}
     return {
         "status": "active",
         "mode": "foreground",

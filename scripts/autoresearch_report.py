@@ -186,7 +186,7 @@ def render_history_table(
     baseline = _metric(events[0]["metric"])
     summary = [
         "Codex Autoresearch",
-        f"Run: {run['run_id'][:8]}  Status: {state.status}  Mode: {run['mode']}",
+        f"Run: {run['run_id'][:8]}  Status: {state.status}",
         (
             f"Metric: {run['metric']['name']}  {baseline} -> {_metric(state.metric)}  "
             f"Target: {_metric(run['target'])} ({run['metric']['direction']} is better)"
@@ -418,7 +418,7 @@ def render_html_report(
         )
 
     guard = run["guard"] or "None"
-    iteration_limit = run["max_iterations"] if run["max_iterations"] is not None else "Unlimited"
+    iteration_limit = run["max_candidates"] if run["max_candidates"] is not None else "Unlimited"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -479,7 +479,6 @@ def render_html_report(
       <div class="header-meta">
         <span class="status {status_class}">{_escape(state.status)}</span>
         <span>Run <code>{_escape(run['run_id'][:12])}</code></span>
-        <span>{_escape(run['mode'])}</span>
         <span>{_escape(run['branch'])}</span>
       </div>
     </div>

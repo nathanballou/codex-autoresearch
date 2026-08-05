@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RESULTS_DIR = "autoresearch-results"
 RUN_FILE = "run.json"
 EVENTS_FILE = "events.jsonl"
@@ -221,18 +221,15 @@ RUN_KEYS = {
     "created_at",
     "repo",
     "branch",
-    "mode",
     "goal",
     "scope",
     "metric",
     "guard",
     "target",
-    "max_iterations",
+    "max_candidates",
     "timeout_seconds",
-    "background",
 }
 METRIC_KEYS = {"name", "direction", "command", "json_key"}
-BACKGROUND_KEYS = {"execution_policy", "codex_bin", "model"}
 
 
 def validate_run(payload: Any, *, source: str) -> dict[str, Any]:
@@ -244,11 +241,9 @@ def validate_run(payload: Any, *, source: str) -> dict[str, Any]:
             f"Unsupported run schema {payload['schema_version']!r} in {source}; "
             f"expected {SCHEMA_VERSION}. Archive the old run and start a new one."
         )
-    for key in ("run_id", "created_at", "repo", "branch", "mode", "goal"):
+    for key in ("run_id", "created_at", "repo", "branch", "goal"):
         if not isinstance(payload[key], str) or not payload[key].strip():
             raise AutoresearchError(f"{source}.{key} must be a non-empty string")
-    if payload["mode"] not in {"foreground", "background"}:
-        raise AutoresearchError(f"{source}.mode must be foreground or background")
     if not isinstance(payload["scope"], list) or not payload["scope"]:
         raise AutoresearchError(f"{source}.scope must be a non-empty string array")
     if any(not isinstance(item, str) or not item for item in payload["scope"]):
@@ -271,36 +266,18 @@ def validate_run(payload: Any, *, source: str) -> dict[str, Any]:
     ):
         raise AutoresearchError(f"{source}.guard must be null or a non-empty string")
     parse_decimal(payload["target"], field=f"{source}.target")
-    if payload["max_iterations"] is not None and (
-        not isinstance(payload["max_iterations"], int)
-        or isinstance(payload["max_iterations"], bool)
-        or payload["max_iterations"] <= 0
+    if payload["max_candidates"] is not None and (
+        not isinstance(payload["max_candidates"], int)
+        or isinstance(payload["max_candidates"], bool)
+        or payload["max_candidates"] <= 0
     ):
-        raise AutoresearchError(f"{source}.max_iterations must be null or a positive integer")
+        raise AutoresearchError(f"{source}.max_candidates must be null or a positive integer")
     if (
         not isinstance(payload["timeout_seconds"], int)
         or isinstance(payload["timeout_seconds"], bool)
         or payload["timeout_seconds"] <= 0
     ):
         raise AutoresearchError(f"{source}.timeout_seconds must be a positive integer")
-    background = payload["background"]
-    if payload["mode"] == "foreground":
-        if background is not None:
-            raise AutoresearchError(f"{source}.background must be null for a foreground run")
-    else:
-        if not isinstance(background, dict):
-            raise AutoresearchError(f"{source}.background must be an object for a background run")
-        require_exact_keys(background, required=BACKGROUND_KEYS, source=f"{source}.background")
-        if background["execution_policy"] not in {"danger-full-access", "workspace-write"}:
-            raise AutoresearchError(
-                f"{source}.background.execution_policy must be danger-full-access or workspace-write"
-            )
-        if not isinstance(background["codex_bin"], str) or not background["codex_bin"].strip():
-            raise AutoresearchError(f"{source}.background.codex_bin must be a non-empty string")
-        if background["model"] is not None and (
-            not isinstance(background["model"], str) or not background["model"].strip()
-        ):
-            raise AutoresearchError(f"{source}.background.model must be null or a non-empty string")
     return payload
 
 
@@ -573,7 +550,7 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
         target = parse_decimal(run["target"], field="run.target")
         if target_reached(metric, target, run["metric"]["direction"]):
             raise AutoresearchError("Active event history reached the target but lacks a complete event")
-        if run["max_iterations"] is not None and iterations >= run["max_iterations"]:
+        if run["max_candidates"] is not None and iterations >= run["max_candidates"]:
             raise AutoresearchError(
                 "Active event history reached the iteration limit but lacks a stopped event"
             )
@@ -1145,41 +1122,12 @@ def write_runtime(
 
 
 def runtime_snapshot(paths: Paths, run: dict[str, Any], state: RunState) -> dict[str, Any]:
-    runtime = load_runtime(paths, run_id=run["run_id"])
-    if run["mode"] != "background":
-        return {
-            "state": "not_applicable",
-            "controller_pid": None,
-            "controller_alive": False,
-            "child_pid": None,
-            "child_alive": False,
-        }
-    if runtime is None:
-        return {
-            "state": "orphaned" if state.status == "active" else "not_started",
-            "controller_pid": None,
-            "controller_alive": False,
-            "child_pid": None,
-            "child_alive": False,
-        }
-    controller_pid = runtime["controller_pid"]
-    child_pid = runtime["child_pid"]
-    controller_alive = process_alive(controller_pid or 0)
-    child_alive = process_alive(child_pid or 0)
-    if state.status == "active" and not controller_alive:
-        return {
-            "state": "orphaned",
-            "controller_pid": controller_pid,
-            "controller_alive": False,
-            "child_pid": child_pid,
-            "child_alive": child_alive,
-        }
     return {
-        "state": runtime["state"],
-        "controller_pid": controller_pid,
-        "controller_alive": controller_alive,
-        "child_pid": child_pid,
-        "child_alive": child_alive,
+        "state": "not_applicable",
+        "controller_pid": None,
+        "controller_alive": False,
+        "child_pid": None,
+        "child_alive": False,
     }
 
 
@@ -1191,7 +1139,6 @@ def status_payload(
 ) -> dict[str, Any]:
     return {
         "run_id": run["run_id"],
-        "mode": run["mode"],
         "status": state.status,
         "goal": run["goal"],
         "repo": run["repo"],
@@ -1208,6 +1155,6 @@ def status_payload(
         "last_event": state.last_event,
         "runtime": runtime_snapshot(paths, run, state),
         "events_path": str(paths.events),
-        "runtime_log": str(paths.runtime_log) if run["mode"] == "background" else None,
+        "runtime_log": None,
         "event_count": len(events),
     }

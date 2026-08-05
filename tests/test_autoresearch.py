@@ -456,7 +456,7 @@ class AutoresearchTest(unittest.TestCase):
         events[0]["guard_log"] = "logs/0000-baseline-guard.json"
         events.append(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "run_id": events[0]["run_id"],
                 "seq": 1,
                 "time": "2026-01-01T00:00:00Z",
@@ -570,6 +570,17 @@ class AutoresearchTest(unittest.TestCase):
         self.assertFalse((self.repo / "autoresearch-results" / "run.json").exists())
         self.assertTrue(Path(archived["destination"]).is_dir())
         self.assertEqual("active", self.init()["status"])
+
+    def test_schema_two_run_has_no_mode_or_background(self) -> None:
+        self.init()
+        run = json.loads(
+            (self.repo / "autoresearch-results" / "run.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(2, run["schema_version"])
+        self.assertNotIn("mode", run)
+        self.assertNotIn("background", run)
+        self.assertIn("max_candidates", run)
+        self.assertNotIn("max_iterations", run)
 
     def test_iteration_limit_stops_without_claiming_completion(self) -> None:
         self.init("--max-candidates", "1")
