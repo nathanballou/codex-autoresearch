@@ -582,6 +582,13 @@ class AutoresearchTest(unittest.TestCase):
         self.assertIn("max_candidates", run)
         self.assertNotIn("max_iterations", run)
 
+    def test_status_has_no_runtime_section(self) -> None:
+        self.init()
+        status = json.loads(self.cli("status", "--repo", str(self.repo)).stdout)
+        self.assertNotIn("runtime", status)
+        self.assertNotIn("runtime_log", status)
+        self.assertFalse((self.repo / "autoresearch-results" / "runtime.json").exists())
+
     def test_iteration_limit_stops_without_claiming_completion(self) -> None:
         self.init("--max-candidates", "1")
         self.set_value(2)

@@ -20,8 +20,6 @@ SCHEMA_VERSION = 2
 RESULTS_DIR = "autoresearch-results"
 RUN_FILE = "run.json"
 EVENTS_FILE = "events.jsonl"
-RUNTIME_FILE = "runtime.json"
-RUNTIME_LOG = "runtime.log"
 PROTECTED_PREFIXES = (
     RESULTS_DIR,
     ".git",
@@ -40,9 +38,6 @@ class Paths:
     root: Path
     run: Path
     events: Path
-    runtime: Path
-    runtime_log: Path
-    stop_request: Path
     logs: Path
 
 
@@ -79,9 +74,6 @@ def paths_for(repo: Path | str) -> Paths:
         root=root,
         run=root / RUN_FILE,
         events=root / EVENTS_FILE,
-        runtime=root / RUNTIME_FILE,
-        runtime_log=root / RUNTIME_LOG,
-        stop_request=root / "stop-request.json",
         logs=root / "logs",
     )
 
@@ -552,7 +544,7 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
             raise AutoresearchError("Active event history reached the target but lacks a complete event")
         if run["max_candidates"] is not None and iterations >= run["max_candidates"]:
             raise AutoresearchError(
-                "Active event history reached the iteration limit but lacks a stopped event"
+                "Active event history reached the candidate limit but lacks a stopped event"
             )
 
     return RunState(
@@ -974,18 +966,6 @@ def revert_trial(repo: Path, trial_commit: str) -> str:
     return git_head(repo)
 
 
-def process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def process_group_alive(process_group_id: int) -> bool:
     if os.name == "nt" or process_group_id <= 0:
         return False
@@ -1067,70 +1047,6 @@ def terminate_process_tree(
         raise AutoresearchError(f"Process {process.pid} was not reaped after tree termination") from exc
 
 
-def load_runtime(paths: Paths, *, run_id: str | None = None) -> dict[str, Any] | None:
-    if not paths.runtime.exists():
-        return None
-    try:
-        text = paths.runtime.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise AutoresearchError(f"Cannot read {paths.runtime}: {exc}") from exc
-    payload = parse_json(text, source=str(paths.runtime))
-    if not isinstance(payload, dict):
-        raise AutoresearchError(f"{paths.runtime} must contain an object")
-    require_exact_keys(
-        payload,
-        required={"run_id", "controller_pid", "child_pid", "state", "started_at", "updated_at"},
-        source=str(paths.runtime),
-    )
-    if not isinstance(payload["run_id"], str) or not payload["run_id"]:
-        raise AutoresearchError(f"{paths.runtime}.run_id must be a non-empty string")
-    if run_id is not None and payload["run_id"] != run_id:
-        raise AutoresearchError(
-            f"{paths.runtime}.run_id does not match the active run: "
-            f"{payload['run_id']} != {run_id}"
-        )
-    if payload["state"] not in {"starting", "running", "stopping", "stopped", "error"}:
-        raise AutoresearchError(f"{paths.runtime}.state is invalid")
-    for key in ("controller_pid", "child_pid"):
-        if payload[key] is not None and (
-            not isinstance(payload[key], int) or isinstance(payload[key], bool) or payload[key] <= 0
-        ):
-            raise AutoresearchError(f"{paths.runtime}.{key} must be null or a positive integer")
-    return payload
-
-
-def write_runtime(
-    paths: Paths,
-    run: dict[str, Any],
-    *,
-    controller_pid: int,
-    child_pid: int | None,
-    state: str,
-    started_at: str,
-) -> None:
-    write_json_atomic(
-        paths.runtime,
-        {
-            "run_id": run["run_id"],
-            "controller_pid": controller_pid,
-            "child_pid": child_pid,
-            "state": state,
-            "started_at": started_at,
-            "updated_at": utc_now(),
-        },
-    )
-
-
-def runtime_snapshot(paths: Paths, run: dict[str, Any], state: RunState) -> dict[str, Any]:
-    return {
-        "state": "not_applicable",
-        "controller_pid": None,
-        "controller_alive": False,
-        "child_pid": None,
-        "child_alive": False,
-    }
-
-
 def status_payload(
     paths: Paths,
     run: dict[str, Any],
@@ -1153,8 +1069,6 @@ def status_payload(
         "iterations": state.iterations,
         "head": state.head,
         "last_event": state.last_event,
-        "runtime": runtime_snapshot(paths, run, state),
         "events_path": str(paths.events),
-        "runtime_log": None,
         "event_count": len(events),
     }
