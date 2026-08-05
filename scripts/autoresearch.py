@@ -15,15 +15,12 @@ from autoresearch_core import (
     AutoresearchError,
     Paths,
     RunState,
-    SCHEMA_VERSION,
-    append_event,
     commit_trial,
     decimal_json,
     git_branch,
     git_head,
     improved,
     json_text,
-    load_context,
     next_command_log,
     normalize_scopes,
     parse_decimal,
@@ -40,13 +37,18 @@ from autoresearch_core import (
     require_paths_in_scope,
     revert_trial,
     run_command,
-    status_payload,
     target_reached,
     utc_now,
-    validate_run,
     working_paths,
     write_json_atomic,
     write_text_atomic,
+)
+from autoresearch_state import (
+    SCHEMA_VERSION,
+    append_event,
+    load_context,
+    status_payload,
+    validate_run,
 )
 from autoresearch_report import render_history_table, render_history_tsv, render_html_report
 

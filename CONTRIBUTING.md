@@ -11,8 +11,9 @@ SKILL.md
 ├── references/workflow.md
 └── references/experiment.md
 
-scripts/autoresearch.py         CLI and detached controller
-scripts/autoresearch_core.py    strict schema, Git, commands, and events
+scripts/autoresearch.py         CLI entry point
+scripts/autoresearch_core.py    atomic IO, Git, and command primitives
+scripts/autoresearch_state.py   strict run and event schema, and state replay
 scripts/autoresearch_report.py  read-only terminal, TSV, and HTML views
 ```
 

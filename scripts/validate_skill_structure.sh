@@ -16,6 +16,7 @@ required=(
   "$ROOT/scripts/autoresearch.py"
   "$ROOT/scripts/autoresearch_core.py"
   "$ROOT/scripts/autoresearch_report.py"
+  "$ROOT/scripts/autoresearch_state.py"
 )
 
 for path in "${required[@]}"; do
@@ -38,8 +39,8 @@ if [[ "$reference_count" -ne 2 ]]; then
 fi
 
 runtime_script_count="$(find "$ROOT/scripts" -maxdepth 1 -type f -name 'autoresearch*.py' | wc -l | tr -d ' ')"
-if [[ "$runtime_script_count" -ne 3 ]]; then
-  echo "Expected exactly 3 autoresearch Python modules, found $runtime_script_count" >&2
+if [[ "$runtime_script_count" -ne 4 ]]; then
+  echo "Expected exactly 4 autoresearch Python modules, found $runtime_script_count" >&2
   exit 1
 fi
 
@@ -65,7 +66,8 @@ grep -q 'allow_implicit_invocation: false' "$ROOT/agents/openai.yaml" || {
 python3 -m py_compile \
   "$ROOT/scripts/autoresearch.py" \
   "$ROOT/scripts/autoresearch_core.py" \
-  "$ROOT/scripts/autoresearch_report.py"
+  "$ROOT/scripts/autoresearch_report.py" \
+  "$ROOT/scripts/autoresearch_state.py"
 python3 -m unittest discover -s "$ROOT/tests" -p 'test_structure.py' -q
 
-echo "Skill structure valid: $skill_bytes-byte SKILL.md, 2 references, 3 runtime modules."
+echo "Skill structure valid: $skill_bytes-byte SKILL.md, 2 references, 4 runtime modules."
