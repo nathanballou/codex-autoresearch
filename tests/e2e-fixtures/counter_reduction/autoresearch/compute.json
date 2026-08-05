@@ -1,0 +1,7 @@
+{
+  "cores_per_candidate": 1,
+  "measurement": "parallel",
+  "bank": [
+    { "id": "local", "kind": "cores", "cores": 2, "label": "ci runner" }
+  ]
+}

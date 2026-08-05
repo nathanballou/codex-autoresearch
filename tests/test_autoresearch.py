@@ -35,6 +35,19 @@ class AutoresearchTest(unittest.TestCase):
         (self.repo / "autoresearch" / "goal.md").write_text(
             "# Goal\n\nDrive the tracked value to zero.\n", encoding="utf-8"
         )
+        (self.repo / "autoresearch" / "compute.json").write_text(
+            json.dumps(
+                {
+                    "cores_per_candidate": 1,
+                    "measurement": "parallel",
+                    "bank": [
+                        {"id": "local", "kind": "cores", "cores": 3, "label": "test host"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.worktrees = Path(self.temp.name) / "worktrees"
         self.git("init", "-b", "main")
         self.git("config", "user.name", "test")
         self.git("config", "user.email", "test@example.com")
@@ -80,9 +93,20 @@ class AutoresearchTest(unittest.TestCase):
             "python3 score.py",
             "--target",
             "0",
+            *self.parallel_flags(),
             *extra,
         )
         return json.loads(completed.stdout)
+
+    def parallel_flags(self) -> list[str]:
+        return [
+            "--max-parallel", "bank",
+            "--worktree-root", str(self.worktrees),
+            "--lease-seconds", "1800",
+            "--window", "8",
+            "--min-per-role", "1",
+            "--plateau-k", "3",
+        ]
 
     def status(self) -> dict:
         return json.loads(self.cli("status", "--repo", str(self.repo)).stdout)
@@ -331,6 +355,7 @@ class AutoresearchTest(unittest.TestCase):
             "python3 score.py",
             "--target",
             "0",
+            *self.parallel_flags(),
             check=False,
         )
         self.assertIn("uncommitted changes", dirty.stderr)
@@ -351,6 +376,7 @@ class AutoresearchTest(unittest.TestCase):
             "python3 score.py",
             "--target",
             "0",
+            *self.parallel_flags(),
             check=False,
         )
         self.assertIn("uses a glob", glob.stderr)
@@ -387,6 +413,7 @@ class AutoresearchTest(unittest.TestCase):
             "0",
             "--guard",
             "python3 guard.py",
+            *self.parallel_flags(),
             check=False,
         )
         self.assertIn("Baseline metric command modified", completed.stderr)
@@ -504,6 +531,7 @@ class AutoresearchTest(unittest.TestCase):
             "python3 score.py",
             "--target",
             "0",
+            *self.parallel_flags(),
             check=False,
         )
         self.assertIn("unexpected.json", unknown.stderr)
@@ -525,6 +553,7 @@ class AutoresearchTest(unittest.TestCase):
             "python3 score.py",
             "--target",
             "0",
+            *self.parallel_flags(),
             check=False,
         )
         self.assertIn("must remain untracked", tracked.stderr)
@@ -546,6 +575,7 @@ class AutoresearchTest(unittest.TestCase):
             "python3 score.py",
             "--target",
             "0.1234567890123456789",
+            *self.parallel_flags(),
             check=False,
         )
         self.assertIn("would lose precision", completed.stderr)

@@ -41,7 +41,17 @@ RUN_KEYS = {
     "max_candidates",
     "timeout_seconds",
     "docs",
+    "parallel",
 }
+PARALLEL_KEYS = {
+    "max_parallel",
+    "max_parallel_resolved",
+    "worktree_root",
+    "prepare",
+    "lease_seconds",
+    "allocation",
+}
+ALLOCATION_KEYS = {"window", "min_per_role", "plateau_k"}
 DOCS_KEYS = {"goal_path", "decisions_path", "goal_sha256", "decisions_sha256"}
 METRIC_KEYS = {"name", "direction", "command", "json_key"}
 
@@ -87,6 +97,46 @@ def validate_run(payload: Any, *, source: str) -> dict[str, Any]:
     for key in sorted(DOCS_KEYS):
         if not isinstance(docs[key], str) or not docs[key]:
             raise AutoresearchError(f"{source}.docs.{key} must be a non-empty string")
+    parallel = payload["parallel"]
+    if not isinstance(parallel, dict):
+        raise AutoresearchError(f"{source}.parallel must be an object")
+    require_exact_keys(parallel, required=PARALLEL_KEYS, source=f"{source}.parallel")
+    if parallel["max_parallel"] != "bank" and (
+        not isinstance(parallel["max_parallel"], int)
+        or isinstance(parallel["max_parallel"], bool)
+        or parallel["max_parallel"] <= 0
+    ):
+        raise AutoresearchError(
+            f"{source}.parallel.max_parallel must be the string bank or a positive integer"
+        )
+    for key in ("max_parallel_resolved", "lease_seconds"):
+        if (
+            not isinstance(parallel[key], int)
+            or isinstance(parallel[key], bool)
+            or parallel[key] <= 0
+        ):
+            raise AutoresearchError(f"{source}.parallel.{key} must be a positive integer")
+    if not isinstance(parallel["worktree_root"], str) or not parallel["worktree_root"]:
+        raise AutoresearchError(f"{source}.parallel.worktree_root must be a non-empty string")
+    if parallel["prepare"] is not None and (
+        not isinstance(parallel["prepare"], str) or not parallel["prepare"].strip()
+    ):
+        raise AutoresearchError(f"{source}.parallel.prepare must be null or a non-empty string")
+    allocation = parallel["allocation"]
+    if not isinstance(allocation, dict):
+        raise AutoresearchError(f"{source}.parallel.allocation must be an object")
+    require_exact_keys(
+        allocation, required=ALLOCATION_KEYS, source=f"{source}.parallel.allocation"
+    )
+    for key in sorted(ALLOCATION_KEYS):
+        if (
+            not isinstance(allocation[key], int)
+            or isinstance(allocation[key], bool)
+            or allocation[key] <= 0
+        ):
+            raise AutoresearchError(
+                f"{source}.parallel.allocation.{key} must be a positive integer"
+            )
     if payload["max_candidates"] is not None and (
         not isinstance(payload["max_candidates"], int)
         or isinstance(payload["max_candidates"], bool)
@@ -112,7 +162,19 @@ CANDIDATE_REASONS = {
 
 EVENT_FIELDS = {
     "baseline": {"head", "metric", "verify_log", "guard_log"},
-    "candidate_started": {"candidate", "base_commit", "base_metric"},
+    "candidate_started": {
+        "candidate",
+        "base_commit",
+        "base_metric",
+        "slot",
+        "role",
+        "role_source",
+        "grant",
+        "branch",
+        "lease_expires_at",
+        "goal_sha256",
+        "decisions_sha256",
+    },
     "candidate_resolved": {
         "candidate",
         "outcome",
@@ -166,7 +228,7 @@ def validate_event(payload: Any, *, run_id: str, expected_seq: int, source: str)
         if key in payload and (not isinstance(payload[key], str) or not payload[key]):
             raise AutoresearchError(f"{source}.{key} must be a non-empty string")
     for key in ("metric", "previous_metric", "trial_metric", "retained_metric"):
-        if key in payload:
+        if key in payload and payload[key] is not None:
             parse_decimal(payload[key], field=f"{source}.{key}")
     if event_type == "baseline":
         if not isinstance(payload["verify_log"], str) or not payload["verify_log"]:
@@ -194,9 +256,19 @@ def validate_event(payload: Any, *, run_id: str, expected_seq: int, source: str)
             raise AutoresearchError(f"{source}.guard is invalid")
         if not isinstance(payload["candidate"], int) or payload["candidate"] <= 0:
             raise AutoresearchError(f"{source}.candidate must be a positive integer")
-        for key in ("description", "trial_commit", "trial_branch", "verify_log"):
+        for key in ("description", "trial_branch"):
             if not isinstance(payload[key], str) or not payload[key]:
                 raise AutoresearchError(f"{source}.{key} must be a non-empty string")
+        # An abandoned candidate never produced a commit or a measurement, so these
+        # stay null. Every other outcome must carry both.
+        for key in ("trial_commit", "verify_log"):
+            if payload["outcome"] == "failed":
+                if payload[key] is not None and not isinstance(payload[key], str):
+                    raise AutoresearchError(f"{source}.{key} must be null or a string")
+            elif not isinstance(payload[key], str) or not payload[key]:
+                raise AutoresearchError(f"{source}.{key} must be a non-empty string")
+        if payload["outcome"] == "failed" and payload["trial_metric"] is not None:
+            raise AutoresearchError(f"{source}.trial_metric must be null for a failed candidate")
         if payload["guard_log"] is not None and (
             not isinstance(payload["guard_log"], str) or not payload["guard_log"]
         ):
@@ -329,9 +401,11 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
                 raise AutoresearchError(
                     f"Candidate {candidate} reason {reason!r} does not match outcome {outcome!r}"
                 )
-            trial_metric = parse_decimal(
-                event["trial_metric"], field="candidate_resolved.trial_metric"
-            ) if event["trial_metric"] is not None else None
+            trial_metric = (
+                parse_decimal(event["trial_metric"], field="candidate_resolved.trial_metric")
+                if event["trial_metric"] is not None
+                else None
+            )
             retained_metric = parse_decimal(
                 event["retained_metric"], field="candidate_resolved.retained_metric"
             )

@@ -43,8 +43,37 @@ from autoresearch_core import (
     write_json_atomic,
     write_text_atomic,
 )
-from autoresearch_bank import bank_capacity, compute_path, detect_local_capacity, load_bank
-from autoresearch_docs import append_decision, load_and_snapshot, require_docs_match
+from autoresearch_allocator import choose_role
+from autoresearch_bank import (
+    allocate_grant,
+    bank_capacity,
+    compute_path,
+    detect_local_capacity,
+    exhausted_entries,
+    load_bank,
+)
+from autoresearch_packet import build_packet
+from autoresearch_slots import (
+    acquire_admission_lock,
+    free_slot,
+    held_grants,
+    lease_expired,
+    live_roles,
+    load_slots,
+    prepare_worktree,
+    read_admission_lock,
+    release_admission_lock,
+    save_slots,
+    slots_path,
+)
+from autoresearch_docs import (
+    DECISIONS_FILE,
+    GOAL_FILE,
+    append_decision,
+    load_and_snapshot,
+    read_doc,
+    require_docs_match,
+)
 from autoresearch_state import (
     SCHEMA_VERSION,
     append_event,
@@ -80,6 +109,23 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--guard", help="Regression command; exit code 0 means pass.")
     parser.add_argument("--max-candidates", type=int)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--max-parallel",
+        required=True,
+        help="Concurrent candidates: a positive integer, or 'bank' for the whole compute bank.",
+    )
+    parser.add_argument(
+        "--worktree-root",
+        required=True,
+        help="Absolute directory for slot worktrees. Must be outside the repository.",
+    )
+    parser.add_argument(
+        "--prepare", help="One-time setup command run in each new slot worktree."
+    )
+    parser.add_argument("--lease-seconds", type=int, required=True)
+    parser.add_argument("--window", type=int, required=True)
+    parser.add_argument("--min-per-role", type=int, required=True)
+    parser.add_argument("--plateau-k", type=int, required=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_repo_argument(finish_parser)
     finish_parser.add_argument("--description", required=True)
+    finish_parser.add_argument(
+        "--candidate", type=int, help="Candidate to finish. Required once slots are in use."
+    )
 
     block_parser = subparsers.add_parser("block", help="Stop on a genuine external blocker.")
     add_repo_argument(block_parser)
@@ -119,6 +168,34 @@ def build_parser() -> argparse.ArgumentParser:
     add_repo_argument(resume_parser)
     resume_parser.add_argument("--note", required=True)
 
+    claim_parser = subparsers.add_parser(
+        "claim", help="Claim slots and emit one worker packet per claimed candidate."
+    )
+    add_repo_argument(claim_parser)
+    claim_parser.add_argument("--count", type=int, default=1)
+    claim_parser.add_argument("--role", choices=["exploit", "explore"])
+    claim_parser.add_argument("--role-reason", help="Required when overriding the policy role.")
+
+    bind_parser = subparsers.add_parser(
+        "bind", help="Record the host-assigned agent id for a claimed candidate."
+    )
+    add_repo_argument(bind_parser)
+    bind_parser.add_argument("--candidate", type=int, required=True)
+    bind_parser.add_argument("--agent-ref", required=True)
+
+    heartbeat_parser = subparsers.add_parser(
+        "heartbeat", help="Extend a candidate's lease before a long operation."
+    )
+    add_repo_argument(heartbeat_parser)
+    heartbeat_parser.add_argument("--candidate", type=int, required=True)
+
+    abandon_parser = subparsers.add_parser(
+        "abandon", help="Give up a claimed candidate without admitting anything."
+    )
+    add_repo_argument(abandon_parser)
+    abandon_parser.add_argument("--candidate", type=int, required=True)
+    abandon_parser.add_argument("--reason", required=True)
+
     compute_parser = subparsers.add_parser(
         "compute", help="Inspect compute capacity. Reports only; never writes."
     )
@@ -140,6 +217,64 @@ def build_parser() -> argparse.ArgumentParser:
     add_repo_argument(archive_parser)
 
     return parser
+
+
+def parallel_config(repo: Path, args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Build the parallelism block from explicit flags and the declared compute bank.
+    Args:
+    repo: Repository root.
+    args: Parsed init arguments.
+    Return: The parallel configuration recorded in run.json.
+
+    Nothing here is defaulted. A worktree root inside the repository is rejected,
+    because a verify command run from the repository root would recurse into every
+    slot worktree and silently multiply the metric.
+    """
+    bank = load_bank(repo)
+    capacity = bank_capacity(bank)
+    if capacity <= 0:
+        raise AutoresearchError(
+            f"The compute bank at {compute_path(repo)} supports no candidates. "
+            f"Lower cores_per_candidate or declare more capacity."
+        )
+    if args.max_parallel == "bank":
+        resolved = capacity
+    else:
+        try:
+            resolved = int(args.max_parallel)
+        except ValueError:
+            raise AutoresearchError(
+                "--max-parallel must be a positive integer or the string bank"
+            ) from None
+        if resolved <= 0:
+            raise AutoresearchError("--max-parallel must be a positive integer or bank")
+        resolved = min(resolved, capacity)
+    root = Path(args.worktree_root).expanduser().resolve()
+    try:
+        root.relative_to(repo)
+    except ValueError:
+        pass
+    else:
+        raise AutoresearchError(
+            f"--worktree-root must be outside the repository. {root} is inside {repo}, "
+            f"so a verify command run from the root would collect every slot copy."
+        )
+    for name in ("lease_seconds", "window", "min_per_role", "plateau_k"):
+        if getattr(args, name) <= 0:
+            raise AutoresearchError(f"--{name.replace('_', '-')} must be a positive integer")
+    return {
+        "max_parallel": args.max_parallel if args.max_parallel == "bank" else resolved,
+        "max_parallel_resolved": resolved,
+        "worktree_root": str(root),
+        "prepare": args.prepare,
+        "lease_seconds": args.lease_seconds,
+        "allocation": {
+            "window": args.window,
+            "min_per_role": args.min_per_role,
+            "plateau_k": args.plateau_k,
+        },
+    }
 
 
 def ensure_new_results_root(repo: Path) -> None:
@@ -341,6 +476,7 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
             "max_candidates": args.max_candidates,
             "timeout_seconds": args.timeout_seconds,
             "docs": load_and_snapshot(repo, paths),
+            "parallel": parallel_config(repo, args),
         }
         validate_run(run, source="new run")
         write_json_atomic(paths.run, run)
@@ -572,6 +708,27 @@ def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
     require_paths_in_scope(changed, run["scope"])
 
     candidate = state.iterations + 1
+    # Slot 0 means the primary checkout. A finish without a prior claim runs the
+    # candidate in place, which is how a host with no concurrent subagent primitive
+    # degrades to sequential execution against the identical state model.
+    bank = load_bank(repo)
+    table = load_slots(paths, run)
+    grant = allocate_grant(bank, held_grants(table))
+    if grant is None:
+        raise AutoresearchError(
+            "Compute bank exhausted: " + ", ".join(exhausted_entries(bank, held_grants(table)))
+        )
+    allocation = run["parallel"]["allocation"]
+    role, role_source = choose_role(
+        events=events,
+        roles=candidate_roles(events),
+        live=live_roles(table),
+        max_parallel=run["parallel"]["max_parallel_resolved"],
+        window=allocation["window"],
+        min_per_role=allocation["min_per_role"],
+        plateau_k=allocation["plateau_k"],
+    )
+    digests = recorded_doc_digests(run, events)
     started = append_event(
         paths,
         run,
@@ -580,6 +737,14 @@ def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
         candidate=candidate,
         base_commit=state.head,
         base_metric=decimal_json(state.metric),
+        slot=0,
+        role=role,
+        role_source=role_source,
+        grant=grant,
+        branch=candidate_branch(run, candidate),
+        lease_expires_at=time.time() + run["parallel"]["lease_seconds"],
+        goal_sha256=digests["goal_sha256"],
+        decisions_sha256=digests["decisions_sha256"],
     )
     events.append(started)
 
@@ -940,6 +1105,263 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def candidate_roles(events: list[dict[str, Any]]) -> dict[int, str]:
+    """
+    Map every started candidate to the role it was claimed under.
+    Args:
+    events: Full validated event list.
+    Return: Candidate id to role.
+    """
+    return {
+        event["candidate"]: event["role"]
+        for event in events
+        if event["event"] == "candidate_started"
+    }
+
+
+def slot_for_candidate(table: dict[str, Any], candidate: int) -> dict[str, Any]:
+    """
+    Find the slot holding one live candidate.
+    Args:
+    table: Slot table.
+    candidate: Candidate identifier.
+    Return: The owning slot record.
+    """
+    for slot in table["slots"]:
+        if slot["candidate"] == candidate:
+            return slot
+    raise AutoresearchError(
+        f"Candidate {candidate} does not hold a slot. It was never claimed, or it "
+        f"was already resolved."
+    )
+
+
+def release_slot(table: dict[str, Any], slot: dict[str, Any]) -> None:
+    """
+    Return a slot to the idle pool and release its grant.
+    Args:
+    table: Slot table.
+    slot: Slot to release.
+    Return: None.
+    """
+    slot.update(
+        state="idle",
+        candidate=None,
+        role=None,
+        grant=None,
+        agent_ref=None,
+        claimed_at=None,
+        lease_expires_at=None,
+    )
+
+
+def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Claim up to --count slots and emit one worker packet for each.
+    Args:
+    args: Parsed CLI arguments carrying the repository, count, and optional role override.
+    Return: Packets for the claimed candidates, and why any request went unfilled.
+    """
+    if args.role and not args.role_reason:
+        raise AutoresearchError("--role requires --role-reason so the override is auditable")
+    if args.count <= 0:
+        raise AutoresearchError("--count must be a positive integer")
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    if state.status != "active":
+        raise AutoresearchError(f"Cannot claim while run status is {state.status}")
+    require_docs_match(repo, recorded_doc_digests(run, events))
+
+    bank = load_bank(repo)
+    table = load_slots(paths, run)
+    parallel = run["parallel"]
+    allocation = parallel["allocation"]
+    goal_text = read_doc(repo, GOAL_FILE, required=True)
+    decisions_text = read_doc(repo, DECISIONS_FILE, required=False)
+    digests = recorded_doc_digests(run, events)
+
+    packets: list[dict[str, Any]] = []
+    unfilled: str | None = None
+    for _ in range(args.count):
+        slot = free_slot(table)
+        if slot is None:
+            unfilled = "every slot is busy or broken"
+            break
+        grant = allocate_grant(bank, held_grants(table))
+        if grant is None:
+            unfilled = "compute bank exhausted: " + ", ".join(
+                exhausted_entries(bank, held_grants(table))
+            )
+            break
+        if args.role:
+            role, role_source = args.role, "override"
+        else:
+            role, role_source = choose_role(
+                events=events,
+                roles=candidate_roles(events),
+                live=live_roles(table),
+                max_parallel=parallel["max_parallel_resolved"],
+                window=allocation["window"],
+                min_per_role=allocation["min_per_role"],
+                plateau_k=allocation["plateau_k"],
+            )
+        # events already grew for each candidate claimed in this loop, so the highest
+        # started id is authoritative on its own. Adding len(packets) double-counts.
+        candidate = max([0, *candidate_roles(events)]) + 1
+        branch = candidate_branch(run, candidate)
+        slot["state"] = "preparing"
+        save_slots(paths, table)
+        prepare_worktree(
+            repo,
+            slot,
+            branch=branch,
+            frontier=state.head,
+            prepare=parallel["prepare"],
+            timeout_seconds=run["timeout_seconds"],
+            log_path=next_command_log(paths, candidate, "prepare"),
+        )
+        expires = time.time() + parallel["lease_seconds"]
+        started = append_event(
+            paths,
+            run,
+            events,
+            event="candidate_started",
+            candidate=candidate,
+            base_commit=state.head,
+            base_metric=decimal_json(state.metric),
+            slot=slot["slot"],
+            role=role,
+            role_source=role_source,
+            grant=grant,
+            branch=branch,
+            lease_expires_at=expires,
+            goal_sha256=digests["goal_sha256"],
+            decisions_sha256=digests["decisions_sha256"],
+        )
+        events.append(started)
+        slot.update(
+            state="live",
+            branch=branch,
+            candidate=candidate,
+            role=role,
+            grant=grant,
+            claimed_at=utc_now(),
+            lease_expires_at=expires,
+        )
+        save_slots(paths, table)
+        packets.append(
+            {
+                "candidate": candidate,
+                "slot": slot["slot"],
+                "role": role,
+                "role_source": role_source,
+                "role_reason": args.role_reason,
+                "grant": grant,
+                "worktree": slot["worktree"],
+                "branch": branch,
+                "lease_expires_at": expires,
+                "packet": build_packet(
+                    control=Path(__file__).resolve(),
+                    run=run,
+                    events=events,
+                    candidate=candidate,
+                    slot=slot,
+                    role=role,
+                    grant=grant,
+                    goal_text=goal_text,
+                    decisions_text=decisions_text,
+                    base_metric=str(decimal_json(state.metric)),
+                    window=allocation["window"],
+                ),
+            }
+        )
+    return {
+        "status": state.status,
+        "claimed": len(packets),
+        "requested": args.count,
+        "unfilled_reason": unfilled,
+        "candidates": packets,
+        "instruction": (
+            "Spawn one subagent per packet using your host's concurrent subagent "
+            "primitive, then record each agent id with bind."
+        ),
+    }
+
+
+def bind_agent(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Record the host-assigned agent id for a claimed candidate.
+    Args:
+    args: Parsed CLI arguments carrying the repository, candidate, and agent reference.
+    Return: Confirmation of the recorded reference.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    table = load_slots(paths, run)
+    slot = slot_for_candidate(table, args.candidate)
+    slot["agent_ref"] = args.agent_ref
+    save_slots(paths, table)
+    return {
+        "candidate": args.candidate,
+        "agent_ref": args.agent_ref,
+        "note": (
+            "Advisory only. The control plane cannot verify a host-assigned id, so "
+            "the lease remains the authority on liveness."
+        ),
+    }
+
+
+def extend_lease(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Push out a candidate's lease deadline.
+    Args:
+    args: Parsed CLI arguments carrying the repository and candidate.
+    Return: The new deadline.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    table = load_slots(paths, run)
+    slot = slot_for_candidate(table, args.candidate)
+    expires = time.time() + run["parallel"]["lease_seconds"]
+    slot["lease_expires_at"] = expires
+    save_slots(paths, table)
+    return {"candidate": args.candidate, "lease_expires_at": expires}
+
+
+def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Resolve a claimed candidate as failed without touching the frontier.
+    Args:
+    args: Parsed CLI arguments carrying the repository, candidate, and reason.
+    Return: The resolution receipt.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    table = load_slots(paths, run)
+    slot = slot_for_candidate(table, args.candidate)
+    event = append_event(
+        paths,
+        run,
+        events,
+        event="candidate_resolved",
+        candidate=args.candidate,
+        outcome="failed",
+        reason="no_change",
+        description=" ".join(args.reason.split()),
+        trial_metric=None,
+        retained_metric=decimal_json(state.metric),
+        trial_commit=None,
+        trial_branch=slot["branch"],
+        head=state.head,
+        guard="not_run",
+        verify_log=None,
+        guard_log=None,
+    )
+    release_slot(table, slot)
+    save_slots(paths, table)
+    return {"candidate": args.candidate, "outcome": "failed", "reason": event["reason"]}
+
+
 def report_compute(args: argparse.Namespace) -> dict[str, Any]:
     """
     Report observed compute capacity and the declared bank, writing nothing.
@@ -1036,6 +1458,14 @@ def main() -> int:
         output = generate_report(args)
     elif args.command == "resume":
         output = resume_run(args)
+    elif args.command == "claim":
+        output = claim_candidates(args)
+    elif args.command == "bind":
+        output = bind_agent(args)
+    elif args.command == "heartbeat":
+        output = extend_lease(args)
+    elif args.command == "abandon":
+        output = abandon_candidate(args)
     elif args.command == "compute":
         output = report_compute(args)
     elif args.command == "decide":

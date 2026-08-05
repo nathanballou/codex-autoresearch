@@ -57,6 +57,8 @@ copy_skill() {
     "$ROOT/scripts/autoresearch_docs.py" \
     "$ROOT/scripts/autoresearch_bank.py" \
     "$ROOT/scripts/autoresearch_allocator.py" \
+    "$ROOT/scripts/autoresearch_slots.py" \
+    "$ROOT/scripts/autoresearch_packet.py" \
     "$destination/scripts/"
   cp "$ROOT/agents/openai.yaml" "$destination/agents/openai.yaml"
 }
@@ -124,7 +126,13 @@ run_foreground_smoke() {
     --direction lower \
     --verify "python3 scripts/score.py" \
     --metric-key failure_count \
-    --target 0 >/dev/null
+    --target 0 \
+    --max-parallel bank \
+    --worktree-root "$temporary/worktrees" \
+    --lease-seconds 1800 \
+    --window 8 \
+    --min-per-role 1 \
+    --plateau-k 3 >/dev/null
 
   python3 - "$repo/src/math_utils.py" <<'PY'
 from pathlib import Path
