@@ -3,21 +3,15 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "autoresearch.py"
-sys.path.insert(0, str(ROOT / "scripts"))
-import autoresearch as autoresearch_runtime
 
 
 class AutoresearchTest(unittest.TestCase):
@@ -65,9 +59,9 @@ class AutoresearchTest(unittest.TestCase):
             check=check,
         )
 
-    def init(self, *extra: str, mode: str = "init") -> dict:
+    def init(self, *extra: str) -> dict:
         completed = self.cli(
-            mode,
+            "init",
             "--repo",
             str(self.repo),
             "--goal",
@@ -91,16 +85,6 @@ class AutoresearchTest(unittest.TestCase):
 
     def set_value(self, value: int) -> None:
         (self.repo / "src" / "value.txt").write_text(f"{value}\n", encoding="utf-8")
-
-    def wait_for_status(self, expected: str, timeout: float = 10) -> dict:
-        deadline = time.monotonic() + timeout
-        last: dict | None = None
-        while time.monotonic() < deadline:
-            last = self.status()
-            if last["status"] == expected:
-                return last
-            time.sleep(0.05)
-        self.fail(f"Timed out waiting for {expected}; last status: {last}")
 
     def test_keep_reaches_target_and_commits(self) -> None:
         self.assertEqual("not_initialized", self.status()["status"])
@@ -361,17 +345,6 @@ class AutoresearchTest(unittest.TestCase):
         )
         self.assertIn("uses a glob", glob.stderr)
 
-    def test_foreground_config_omits_background_only_options(self) -> None:
-        help_text = self.cli("init", "--help").stdout
-        self.assertNotIn("--codex-bin", help_text)
-        self.assertNotIn("--execution-policy", help_text)
-        self.assertIn("--codex-bin", self.cli("launch", "--help").stdout)
-        self.init()
-        run = json.loads(
-            (self.repo / "autoresearch-results" / "run.json").read_text(encoding="utf-8")
-        )
-        self.assertIsNone(run["background"])
-
     def test_baseline_side_effect_stops_before_guard_and_is_diagnostic(self) -> None:
         (self.repo / "score.py").write_text(
             "from pathlib import Path\n"
@@ -599,7 +572,7 @@ class AutoresearchTest(unittest.TestCase):
         self.assertEqual("active", self.init()["status"])
 
     def test_iteration_limit_stops_without_claiming_completion(self) -> None:
-        self.init("--max-iterations", "1")
+        self.init("--max-candidates", "1")
         self.set_value(2)
         result = json.loads(
             self.cli(
@@ -613,69 +586,6 @@ class AutoresearchTest(unittest.TestCase):
         self.assertEqual("stopped", result["status"])
         self.assertEqual(2, self.status()["metric"]["current"])
         self.assertIn("stopped", self.cli("history", "--repo", str(self.repo)).stdout)
-
-    def test_background_controller_runs_multiple_real_helper_iterations(self) -> None:
-        fake = Path(self.temp.name) / "fake-codex"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json, pathlib, subprocess, sys\n"
-            "args = sys.argv[1:]\n"
-            "repo = pathlib.Path(args[args.index('-C') + 1])\n"
-            "sys.stdin.read()\n"
-            f"script = {str(SCRIPT)!r}\n"
-            "status = json.loads(subprocess.check_output([sys.executable, script, 'status', '--repo', str(repo)], text=True))\n"
-            "value = int(status['metric']['current'])\n"
-            "next_value = 2 if value == 3 else 0\n"
-            "(repo / 'src' / 'value.txt').write_text(f'{next_value}\\n', encoding='utf-8')\n"
-            "subprocess.check_call([sys.executable, script, 'finish', '--repo', str(repo), '--description', f'reduce value to {next_value}'])\n",
-            encoding="utf-8",
-        )
-        fake.chmod(0o755)
-        launched = self.init("--codex-bin", str(fake), mode="launch")
-        self.assertIn(launched["status"], {"running", "complete"})
-        status = self.wait_for_status("complete")
-        self.assertEqual(2, status["iterations"])
-        runtime_log = Path(status["runtime_log"]).read_text(encoding="utf-8")
-        self.assertEqual(2, runtime_log.count('"event":"worker_started"'))
-        self.assertIn('"--ephemeral"', runtime_log)
-
-    def test_background_worker_without_event_fails_fast(self) -> None:
-        fake = Path(self.temp.name) / "fake-codex-no-event"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys\n"
-            "sys.stdin.read()\n",
-            encoding="utf-8",
-        )
-        fake.chmod(0o755)
-        self.init("--codex-bin", str(fake), mode="launch")
-        status = self.wait_for_status("error")
-        self.assertIn("one-iteration contract", status["last_event"]["reason"])
-
-    def test_background_launch_surfaces_missing_codex_binary(self) -> None:
-        completed = self.cli(
-            "launch",
-            "--repo",
-            str(self.repo),
-            "--goal",
-            "Reduce the value to zero",
-            "--scope",
-            "src",
-            "--metric-name",
-            "value",
-            "--direction",
-            "lower",
-            "--verify",
-            "python3 score.py",
-            "--target",
-            "0",
-            "--codex-bin",
-            str(Path(self.temp.name) / "missing-codex"),
-            check=False,
-        )
-        self.assertNotEqual(0, completed.returncode)
-        self.assertIn("executable was not found", completed.stderr)
-        self.assertFalse((self.repo / "autoresearch-results").exists())
 
     def test_unresolved_trial_error_cannot_resume(self) -> None:
         (self.repo / "score.py").write_text(
@@ -742,251 +652,6 @@ class AutoresearchTest(unittest.TestCase):
             status["repository"]["expected_head"],
             status["repository"]["current_head"],
         )
-
-    def test_background_stop_terminates_sleeping_worker(self) -> None:
-        fake = Path(self.temp.name) / "fake-codex-sleep"
-        ready = Path(self.temp.name) / "worker-ready"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
-            "import pathlib, signal, sys, time\n"
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-            f"pathlib.Path({str(ready)!r}).write_text('ready', encoding='utf-8')\n"
-            "sys.stdin.read()\n"
-            "time.sleep(30)\n",
-            encoding="utf-8",
-        )
-        fake.chmod(0o755)
-        self.init("--codex-bin", str(fake), mode="launch")
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            status = self.status()
-            if status["runtime"]["child_pid"]:
-                if ready.exists():
-                    break
-            time.sleep(0.05)
-        else:
-            self.fail("background worker never started")
-        stopped = json.loads(self.cli("stop", "--repo", str(self.repo)).stdout)
-        self.assertEqual("stopped", stopped["status"])
-        self.assertEqual("stopped", self.status()["status"])
-
-    def test_controller_error_terminates_active_worker(self) -> None:
-        fake = Path(self.temp.name) / "fake-codex-controller-error"
-        ready = Path(self.temp.name) / "controller-error-worker-ready"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
-            "import pathlib, signal, sys, time\n"
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-            f"pathlib.Path({str(ready)!r}).write_text('ready', encoding='utf-8')\n"
-            "sys.stdin.read()\n"
-            "time.sleep(30)\n",
-            encoding="utf-8",
-        )
-        fake.chmod(0o755)
-        self.init("--codex-bin", str(fake), mode="launch")
-        deadline = time.monotonic() + 5
-        child_pid = None
-        while time.monotonic() < deadline:
-            status = self.status()
-            child_pid = status["runtime"]["child_pid"]
-            if child_pid and ready.exists():
-                break
-            time.sleep(0.05)
-        else:
-            self.fail("background worker never started")
-        stop_request = self.repo / "autoresearch-results" / "stop-request.json"
-        stop_request.write_text("{", encoding="utf-8")
-        status = self.wait_for_status("error", timeout=15)
-        self.assertFalse(status["runtime"]["child_alive"])
-        runtime_log = Path(status["runtime_log"]).read_text(encoding="utf-8")
-        self.assertIn("worker_cleanup_after_controller_error", runtime_log)
-        self.assertIn("Invalid JSON", status["last_event"]["reason"])
-
-    def test_controller_start_failure_terminates_before_state_diagnostics(self) -> None:
-        self.init()
-        paths, run, _, _ = autoresearch_runtime.load_context(self.repo)
-        paths.events.write_text("{", encoding="utf-8")
-        process_kwargs: dict[str, object] = {}
-        if os.name == "nt":
-            process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            process_kwargs["start_new_session"] = True
-        process = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
-            **process_kwargs,
-        )
-        try:
-            with self.assertRaises(autoresearch_runtime.AutoresearchError) as raised:
-                autoresearch_runtime.fail_controller_start(
-                    paths,
-                    run,
-                    process,
-                    "2026-01-01T00:00:00Z",
-                    "startup validation failed",
-                )
-            process.wait(timeout=5)
-            self.assertIn("event error record failed", str(raised.exception))
-            runtime = json.loads(paths.runtime.read_text(encoding="utf-8"))
-            self.assertEqual("error", runtime["state"])
-            self.assertFalse(autoresearch_runtime.process_alive(process.pid))
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=5)
-
-    def test_controller_spawn_failure_records_terminal_error(self) -> None:
-        self.init()
-        run_path = self.repo / "autoresearch-results" / "run.json"
-        run = json.loads(run_path.read_text(encoding="utf-8"))
-        run["mode"] = "background"
-        run["background"] = {
-            "execution_policy": "danger-full-access",
-            "codex_bin": sys.executable,
-            "model": None,
-        }
-        run_path.write_text(json.dumps(run), encoding="utf-8")
-        real_popen = subprocess.Popen
-
-        def fail_controller_only(command: object, *args: object, **kwargs: object) -> subprocess.Popen:
-            if (
-                isinstance(command, list)
-                and len(command) >= 3
-                and command[0] == sys.executable
-                and command[1] == str(SCRIPT)
-                and command[2] == "_controller"
-            ):
-                raise OSError("process limit reached")
-            return real_popen(command, *args, **kwargs)
-
-        with mock.patch.object(
-            autoresearch_runtime.subprocess,
-            "Popen",
-            side_effect=fail_controller_only,
-        ):
-            with self.assertRaises(autoresearch_runtime.AutoresearchError) as raised:
-                autoresearch_runtime.spawn_controller(self.repo)
-        self.assertIn("process limit reached", str(raised.exception))
-        status = self.status()
-        self.assertEqual("error", status["status"])
-        self.assertIn("Failed to start background controller", status["last_event"]["reason"])
-        runtime_log = Path(status["runtime_log"]).read_text(encoding="utf-8")
-        self.assertIn("controller_spawn_failed", runtime_log)
-
-    def test_stop_accepts_run_that_completes_during_stop_race(self) -> None:
-        self.init()
-        run_path = self.repo / "autoresearch-results" / "run.json"
-        run = json.loads(run_path.read_text(encoding="utf-8"))
-        run["mode"] = "background"
-        run["background"] = {
-            "execution_policy": "danger-full-access",
-            "codex_bin": sys.executable,
-            "model": None,
-        }
-        run_path.write_text(json.dumps(run), encoding="utf-8")
-        controller = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        runtime = {
-            "run_id": run["run_id"],
-            "controller_pid": controller.pid,
-            "child_pid": None,
-            "state": "running",
-            "started_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
-        }
-        (self.repo / "autoresearch-results" / "runtime.json").write_text(
-            json.dumps(runtime), encoding="utf-8"
-        )
-        thread_errors: list[BaseException] = []
-
-        def complete_after_stop_request() -> None:
-            try:
-                request = self.repo / "autoresearch-results" / "stop-request.json"
-                deadline = time.monotonic() + 5
-                while not request.exists() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                if not request.exists():
-                    raise RuntimeError("stop request was not created")
-                self.set_value(0)
-                self.cli(
-                    "finish",
-                    "--repo",
-                    str(self.repo),
-                    "--description",
-                    "complete during stop",
-                )
-                request.unlink()
-                controller.terminate()
-                controller.wait(timeout=5)
-            except BaseException as exc:
-                thread_errors.append(exc)
-
-        helper = threading.Thread(target=complete_after_stop_request)
-        helper.start()
-        try:
-            result = json.loads(self.cli("stop", "--repo", str(self.repo)).stdout)
-        finally:
-            helper.join(timeout=10)
-            if controller.poll() is None:
-                controller.kill()
-            controller.wait(timeout=5)
-        self.assertFalse(helper.is_alive())
-        self.assertEqual([], thread_errors)
-        self.assertEqual("complete", result["status"])
-        self.assertEqual("complete", self.status()["status"])
-
-    def test_live_orphaned_worker_blocks_control_transitions(self) -> None:
-        self.init()
-        run_path = self.repo / "autoresearch-results" / "run.json"
-        run = json.loads(run_path.read_text(encoding="utf-8"))
-        run["mode"] = "background"
-        run["background"] = {
-            "execution_policy": "danger-full-access",
-            "codex_bin": sys.executable,
-            "model": None,
-        }
-        run_path.write_text(json.dumps(run), encoding="utf-8")
-        child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
-            start_new_session=True,
-        )
-        try:
-            runtime = {
-                "run_id": run["run_id"],
-                "controller_pid": 2_147_483_647,
-                "child_pid": child.pid,
-                "state": "running",
-                "started_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
-            }
-            (self.repo / "autoresearch-results" / "runtime.json").write_text(
-                json.dumps(runtime), encoding="utf-8"
-            )
-            status = self.status()
-            self.assertEqual("orphaned", status["runtime"]["state"])
-            self.assertFalse(status["runtime"]["controller_alive"])
-            self.assertTrue(status["runtime"]["child_alive"])
-            for command in (
-                ("stop", "--repo", str(self.repo)),
-                ("resume", "--repo", str(self.repo), "--note", "retry"),
-                ("archive", "--repo", str(self.repo)),
-            ):
-                completed = self.cli(*command, check=False)
-                self.assertNotEqual(0, completed.returncode)
-                self.assertIn(str(child.pid), completed.stderr)
-        finally:
-            child.kill()
-            child.wait(timeout=5)
-        orphan_resume = self.cli(
-            "resume",
-            "--repo",
-            str(self.repo),
-            "--note",
-            "retry",
-            check=False,
-        )
-        self.assertIn("Run stop to close the orphaned state", orphan_resume.stderr)
-        self.assertEqual("active", self.status()["status"])
-        stopped = json.loads(self.cli("stop", "--repo", str(self.repo)).stdout)
-        self.assertEqual("stopped", stopped["status"])
 
 
 if __name__ == "__main__":
