@@ -996,10 +996,46 @@ In Invariants, delete "Never ask 'should I continue?' after launch" if it refere
 
 Delete the `## Background` section (lines 75-95), the `runtime.json` and `runtime.log` lines from the Artifacts tree (lines 120-121), the two `orphaned` sentences in Run States (line 109), and the `Worker produces no event` and `Controller disappears` bullets in Errors And Recovery (lines 171-172). Rename the `## Foreground` heading to `## The Experiment Loop`, since there is no longer a second mode to contrast it with.
 
+Three further sites outside those sections:
+
+| Line | Current | Change to |
+|---|---|---|
+| 25 | "You also choose foreground or background and may set an iteration limit." | Drop the mode choice; keep the limit, renamed — "You may set a candidate limit." |
+| 105 | Run-states table: "User stop or iteration limit" | "User stop or candidate limit" |
+| 129 | "If the current run is still active, stop a background run first. For foreground, clear the old Codex Goal with `/goal clear`, then..." | Drop the background clause, keep the Goal-clearing instruction as the unconditional path |
+
+The `iteration limit` → `candidate limit` rewording on lines 25 and 105 follows the `max_iterations` → `max_candidates` rename from Task 5; leaving the prose saying "iteration" would contradict the flag users actually type.
+
 - [ ] **Step 4: Remove background from `docs/EXAMPLES.md` and `README.md`**
 
+Surveyed inventory of every hit, so this is not a discovery exercise. Line numbers are as of commit `fc39447`; re-grep to confirm before editing, since earlier steps in this task shift them.
+
+`README.md`:
+
+| Lines | Content |
+|---|---|
+| 60-65 | Example dialogue asking "Run in foreground or background?" and answering "Background. Go." |
+| 89-98 | The whole `## Foreground And Background` section, including the comparison table and the mode-continuation paragraph |
+| 108 | "foreground or background mode;" in the confirmation-block list |
+| 120-123 | Artifacts table rows for `runtime.json`, `runtime.log`, and the `logs/` row mentioning "background worker output" |
+| 205 | Sandbox paragraph explaining Full Access defaults for background runs |
+| 207-209 | FAQ "Can I stop and resume?" answer describing background status/stop/resume |
+
+`docs/EXAMPLES.md`:
+
+| Lines | Content |
+|---|---|
+| 74 | "before launch" phrasing — reword, the noisy-benchmark point itself stays |
+| 138-143 | The whole `## Background Overnight` example section |
+
+`docs/INSTALL.md`: no hits. Leave it alone.
+
+`CONTRIBUTING.md:56`: says the skill gate "runs strict unit tests plus deterministic foreground and background smoke tests." The background smoke test was deleted in Task 3, so this is now factually wrong. Change it to name only the foreground smoke test.
+
+Re-grep to catch anything this inventory missed:
+
 ```bash
-grep -n "background\|Background\|launch\|runtime\|max-iterations\|orphan" docs/EXAMPLES.md README.md docs/INSTALL.md
+grep -n "background\|Background\|launch\|runtime\|max-iterations\|orphan" docs/EXAMPLES.md README.md docs/INSTALL.md CONTRIBUTING.md
 ```
 
 Apply one rule per hit:
