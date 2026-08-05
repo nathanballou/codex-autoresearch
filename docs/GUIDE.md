@@ -1,13 +1,13 @@
 # User Guide
 
-Codex Autoresearch runs one measurable experiment loop in one Git repository. It is deliberately smaller than a general task orchestrator: Codex reasons about the code, while the skill enforces measurement, commit ownership, rollback, and a durable audit trail.
+Autoresearch runs one measurable experiment loop in one Git repository. It is deliberately smaller than a general task orchestrator: Codex reasons about the code, while the skill enforces measurement, commit ownership, rollback, and a durable audit trail.
 
 ## Start A Run
 
 Invoke the skill with a result, not an implementation plan:
 
 ```text
-$codex-autoresearch reduce scripts/score.py error_count to 0
+$autoresearch reduce scripts/score.py error_count to 0
 ```
 
 Codex scans the repository and confirms seven values before writing:
@@ -109,9 +109,9 @@ If the current run is still active, clear the old Codex Goal with `/goal clear`,
 Use the same skill entry to inspect any initialized run:
 
 ```text
-$codex-autoresearch show experiment history
-$codex-autoresearch export experiment history as TSV
-$codex-autoresearch generate an HTML report
+$autoresearch show experiment history
+$autoresearch export experiment history as TSV
+$autoresearch generate an HTML report
 ```
 
 History renders a terminal table from the fully validated event log. TSV is emitted on request for spreadsheets or scripts. The HTML command writes a self-contained snapshot to `autoresearch-results/report.html` with the metric trajectory, keep/discard timeline, commits, and log links.

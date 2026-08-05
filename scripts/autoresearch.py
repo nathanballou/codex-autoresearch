@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Command line control plane for codex-autoresearch."""
+"""Command line control plane for autoresearch."""
 
 from __future__ import annotations
 

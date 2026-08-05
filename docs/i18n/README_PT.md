@@ -1,4 +1,4 @@
-# Codex Autoresearch
+# Autoresearch
 
 [English](../../README.md) | **Português**
 
@@ -13,7 +13,7 @@ Diga ao Codex qual meta numérica deseja alcançar. Ele inspeciona o repositóri
 Instale no Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/autoresearch
 ```
 
 Abra um repositório Git limpo com Full Access:
@@ -25,7 +25,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 Depois invoque:
 
 ```text
-$codex-autoresearch reduza error_count de `python3 scripts/score.py` para 0
+$autoresearch reduza error_count de `python3 scripts/score.py` para 0
 ```
 
 Antes da primeira escrita, Codex confirma objetivo, escopo, linha de base, meta, comando de métrica, guard opcional e foreground/background.
@@ -50,7 +50,7 @@ Codex cuida das hipóteses e mudanças de código. O script de controle cuida do
 | Execução | Tarefa Codex atual | Controller separado |
 | Continuidade | Goal oficial do Codex | Um worker `codex exec` por iteração |
 | Uso | Observar e orientar | Execuções longas ou noturnas |
-| Controle | Pausar/retomar Goal | Status/stop/resume via `$codex-autoresearch` |
+| Controle | Pausar/retomar Goal | Status/stop/resume via `$autoresearch` |
 
 Foreground continua por meio do Goal oficial. Background não cria Goal; o controller mantém a execução. A instalação não altera a configuração do Codex.
 
@@ -71,9 +71,9 @@ Arquivos não commitados ficam em `autoresearch-results/`:
 ## Histórico e relatório
 
 ```text
-$codex-autoresearch show experiment history
-$codex-autoresearch export experiment history as TSV
-$codex-autoresearch generate an HTML report
+$autoresearch show experiment history
+$autoresearch export experiment history as TSV
+$autoresearch generate an HTML report
 ```
 
 A tabela e o relatório HTML são gerados a partir de eventos validados. O snapshot HTML fica em `autoresearch-results/report.html` e não participa do estado nem da recuperação.

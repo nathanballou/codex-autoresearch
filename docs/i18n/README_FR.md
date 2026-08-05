@@ -1,4 +1,4 @@
-# Codex Autoresearch
+# Autoresearch
 
 [English](../../README.md) | **Français**
 
@@ -13,7 +13,7 @@ Convient aux tests en échec, à la couverture, aux erreurs de type, aux avertis
 Installez depuis Codex :
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/autoresearch
 ```
 
 Ouvrez de préférence un dépôt Git propre avec Full Access :
@@ -25,7 +25,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 Puis lancez :
 
 ```text
-$codex-autoresearch réduire error_count de `python3 scripts/score.py` à 0
+$autoresearch réduire error_count de `python3 scripts/score.py` à 0
 ```
 
 Avant toute écriture, Codex confirme l'objectif, le périmètre, la mesure initiale, la cible, la commande, le guard facultatif et le mode foreground/background.
@@ -50,7 +50,7 @@ Codex choisit les hypothèses et modifie le code. Le script de contrôle possèd
 | Exécution | Tâche Codex actuelle | Controller détaché |
 | Continuité | Goal Codex officiel | Un worker `codex exec` par itération |
 | Usage | Observation et pilotage | Exécutions longues ou nocturnes |
-| Contrôle | Pause/reprise du Goal | Status/stop/resume via `$codex-autoresearch` |
+| Contrôle | Pause/reprise du Goal | Status/stop/resume via `$autoresearch` |
 
 Foreground continue grâce au Goal officiel. Background n'utilise pas de Goal ; le controller assure la continuité. L'installation ne modifie aucun réglage Codex.
 
@@ -71,9 +71,9 @@ Les fichiers non commités se trouvent dans `autoresearch-results/` :
 ## Historique et rapport
 
 ```text
-$codex-autoresearch show experiment history
-$codex-autoresearch export experiment history as TSV
-$codex-autoresearch generate an HTML report
+$autoresearch show experiment history
+$autoresearch export experiment history as TSV
+$autoresearch generate an HTML report
 ```
 
 Le tableau et le rapport HTML sont générés à partir des événements validés. L'instantané HTML est écrit dans `autoresearch-results/report.html` et ne participe ni à l'état ni à la reprise.

@@ -70,7 +70,7 @@ prepare_repo() {
   cp -R "$ROOT/tests/e2e-fixtures/$fixture" "$repo"
   find "$repo" -type d -name __pycache__ -prune -exec rm -rf {} +
   find "$repo" -type f -name '*.pyc' -delete
-  copy_skill "$repo/.agents/skills/codex-autoresearch"
+  copy_skill "$repo/.agents/skills/autoresearch"
   git -C "$repo" init -b main >/dev/null
   git -C "$repo" config user.name e2e
   git -C "$repo" config user.email e2e@example.com
@@ -116,7 +116,7 @@ run_foreground_smoke() {
   local temporary repo control
   temporary="$(mktemp -d)"
   repo="$(prepare_repo interactive_unittest_fix "$temporary")"
-  control="$repo/.agents/skills/codex-autoresearch/scripts/autoresearch.py"
+  control="$repo/.agents/skills/autoresearch/scripts/autoresearch.py"
 
   python3 "$control" init \
     --repo "$repo" \
@@ -213,7 +213,7 @@ run_real_foreground() {
   local temporary repo control prompt terminal iterations
   temporary="$(mktemp -d)"
   repo="$(prepare_repo interactive_unittest_fix "$temporary")"
-  control="$repo/.agents/skills/codex-autoresearch/scripts/autoresearch.py"
+  control="$repo/.agents/skills/autoresearch/scripts/autoresearch.py"
   prompt="$(cat "$repo/prompt.txt")"
   echo "Starting real foreground demo in: $repo"
   echo "Submit the skill prompt, confirm foreground, then approve with go."

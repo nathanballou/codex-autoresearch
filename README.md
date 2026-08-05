@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="image/banner.png" width="700" alt="Codex Autoresearch">
+  <img src="image/banner.png" width="700" alt="Autoresearch">
 </p>
 
 <h2 align="center"><b>Aim. Iterate. Arrive.</b></h2>
@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://developers.openai.com/codex/skills"><img src="https://img.shields.io/badge/Codex-Skill-blue?logo=openai&logoColor=white" alt="Codex Skill"></a>
-  <a href="https://github.com/leo-lilinxiao/codex-autoresearch"><img src="https://img.shields.io/github/stars/leo-lilinxiao/codex-autoresearch?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/leo-lilinxiao/autoresearch"><img src="https://img.shields.io/github/stars/leo-lilinxiao/autoresearch?style=social" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License"></a>
 </p>
 
@@ -37,7 +37,7 @@ Autoresearch works for test failures, coverage, type errors, warnings, latency, 
 Install from Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/autoresearch
 ```
 
 Open a clean Git repository with Full Access:
@@ -51,7 +51,7 @@ For V2 supporting workers pinned to Luna at maximum reasoning, complete the [opt
 Then invoke the skill:
 
 ```text
-You:   $codex-autoresearch
+You:   $autoresearch
        Reduce `python3 scripts/score.py` error_count to 0.
 
 Codex: Baseline: 5
@@ -95,7 +95,7 @@ The control script owns commits, verification, rollback, and state. Codex owns t
 | Runs in | Current Codex task | Detached controller |
 | Continuation | Official Codex Goal | One `codex exec` worker per iteration |
 | Best for | Watching and steering live | Long or overnight runs |
-| Control | Codex Goal pause/resume | Ask `$codex-autoresearch` for status, stop, or resume |
+| Control | Codex Goal pause/resume | Ask `$autoresearch` for status, stop, or resume |
 
 Foreground and background use the same experiment rules. A run uses one mode at a time. Foreground continuation uses a Codex Goal; background continuation belongs to the detached controller.
 
@@ -132,11 +132,11 @@ Run artifacts live in `autoresearch-results/` and stay uncommitted:
 Ask the skill to show the validated experiment history:
 
 ```text
-$codex-autoresearch show experiment history
+$autoresearch show experiment history
 ```
 
 ```text
-Codex Autoresearch
+Autoresearch
 Run: 0a516883  Status: complete  Mode: foreground
 Metric: error_count  2 -> 0  Target: 0 (lower is better)
 
@@ -152,14 +152,14 @@ SEQ  ITER  EVENT     PREVIOUS  TRIAL  RETAINED  DESCRIPTION
 The same validated events can be exported as TSV or rendered as a self-contained static report:
 
 ```text
-$codex-autoresearch export experiment history as TSV
-$codex-autoresearch generate an HTML report
+$autoresearch export experiment history as TSV
+$autoresearch generate an HTML report
 ```
 
 The report is written to `autoresearch-results/report.html`. It is a replaceable snapshot, not runtime state.
 
 <p align="center">
-  <img src="image/autoresearch-report.png" width="900" alt="Codex Autoresearch HTML report showing metric trajectory and experiment history">
+  <img src="image/autoresearch-report.png" width="900" alt="Autoresearch HTML report showing metric trajectory and experiment history">
 </p>
 
 ## Safety Model
@@ -208,7 +208,7 @@ Each iteration creates or reverts a Git commit. Restricted sandboxes may block w
 
 **Can I stop and resume?**
 
-Yes. Interrupt or pause a foreground Goal. For background, invoke `$codex-autoresearch` and ask for status, stop, or resume with a new direction.
+Yes. Interrupt or pause a foreground Goal. For background, invoke `$autoresearch` and ask for status, stop, or resume with a new direction.
 
 **Can it run without Git or across several repos?**
 
@@ -225,12 +225,12 @@ Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch),
 ## Citation
 
 ```bibtex
-@misc{codex-autoresearch,
+@misc{autoresearch,
   author = {Li, Linxiao},
-  title = {Codex Autoresearch: Autonomous Goal-Driven Experimentation for Codex},
+  title = {Autoresearch: Autonomous Goal-Driven Experimentation for Codex},
   year = {2026},
   publisher = {GitHub},
-  url = {https://github.com/leo-lilinxiao/codex-autoresearch}
+  url = {https://github.com/leo-lilinxiao/autoresearch}
 }
 ```
 
@@ -238,11 +238,11 @@ GitHub also reads [CITATION.cff](CITATION.cff) for its **Cite this repository** 
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=leo-lilinxiao%2Fcodex-autoresearch&type=timeline&legend=top-left">
+<a href="https://www.star-history.com/?repos=leo-lilinxiao%2Fautoresearch&type=timeline&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/codex-autoresearch&type=timeline&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/codex-autoresearch&type=timeline&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=leo-lilinxiao/codex-autoresearch&type=timeline&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/autoresearch&type=timeline&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/autoresearch&type=timeline&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=leo-lilinxiao/autoresearch&type=timeline&legend=top-left" />
  </picture>
 </a>
 

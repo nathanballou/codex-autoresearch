@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict state, command, and Git primitives for codex-autoresearch."""
+"""Strict state, command, and Git primitives for autoresearch."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import base64
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import time
@@ -20,10 +21,16 @@ RESULTS_DIR = "autoresearch-results"
 DOCS_DIR = "autoresearch"
 RUN_FILE = "run.json"
 EVENTS_FILE = "events.jsonl"
+# Paths that are almost always build output rather than authored source. Used only to
+# make a dirty-repository error more actionable; never to decide what is in scope.
+GENERATED_HINTS = re.compile(
+    r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|"
+    r"target|dist|build)(/|$)|\.(pyc|pyo|class|o)$"
+)
 PROTECTED_PREFIXES = (
     RESULTS_DIR,
     ".git",
-    ".agents/skills/codex-autoresearch",
+    ".agents/skills",
     DOCS_DIR,
 )
 
@@ -358,9 +365,15 @@ def require_artifacts_untracked(repo: Path) -> None:
 def require_clean_repo(repo: Path, *, expected_head: str | None = None, expected_branch: str | None = None) -> None:
     dirty = working_paths(repo)
     if dirty:
-        raise AutoresearchError(
-            "Repository has uncommitted changes: " + ", ".join(dirty) + ". Commit or stash them first."
-        )
+        message = "Repository has uncommitted changes: " + ", ".join(dirty)
+        # Running the verify command before init is the usual way a repository first
+        # becomes dirty, and it usually leaves build output rather than real edits.
+        if any(GENERATED_HINTS.search(path) for path in dirty):
+            message += (
+                ". Some of these look generated. Add them to .gitignore rather than "
+                "committing them, then retry"
+            )
+        raise AutoresearchError(message + ". Commit or stash them first.")
     if expected_head is not None and git_head(repo) != expected_head:
         raise AutoresearchError(
             f"Git HEAD changed outside autoresearch: expected {expected_head}, got {git_head(repo)}"

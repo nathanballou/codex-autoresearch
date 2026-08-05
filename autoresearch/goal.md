@@ -1,6 +1,6 @@
 # Overarching Goal
 
-Ship `codex-autoresearch`: a skill that runs autonomous, measurable experiments in a
+Ship `autoresearch`: a skill that runs autonomous, measurable experiments in a
 Git repository. Change one hypothesis at a time, verify a numeric metric, keep
 improvements, and discard failures — with every decision reconstructible from an
 append-only event log.

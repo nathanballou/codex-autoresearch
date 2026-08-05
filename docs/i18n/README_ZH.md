@@ -1,4 +1,4 @@
-# Codex Autoresearch
+# Autoresearch
 
 [English](../../README.md) | **中文**
 
@@ -13,7 +13,7 @@
 在 Codex 中安装：
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/autoresearch
 ```
 
 建议用 Full Access 打开一个干净的 Git 仓库：
@@ -25,7 +25,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 然后调用：
 
 ```text
-$codex-autoresearch 把 `python3 scripts/score.py` 的 error_count 降到 0
+$autoresearch 把 `python3 scripts/score.py` 的 error_count 降到 0
 ```
 
 Codex 会在首次写入前确认：目标、可修改范围、当前值、目标值、指标命令、可选 guard，以及 foreground 或 background。
@@ -50,7 +50,7 @@ Codex 负责分析和改代码；控制脚本负责 Git 边界、测量、回滚
 | 运行位置 | 当前 Codex 任务 | 独立 controller |
 | 持续运行 | Codex 官方 Goal | 每轮一个 `codex exec` worker |
 | 适合 | 实时观察和指导 | 长时间或通宵运行 |
-| 控制 | Goal 的暂停/恢复 | 用 `$codex-autoresearch` 查询、停止、恢复 |
+| 控制 | Goal 的暂停/恢复 | 用 `$autoresearch` 查询、停止、恢复 |
 
 Foreground 由 Codex 官方 Goal 持续运行。Background 不创建 Goal，由 controller 负责持续运行。安装不会修改 Codex 配置。
 
@@ -71,9 +71,9 @@ Foreground 由 Codex 官方 Goal 持续运行。Background 不创建 Goal，由 
 ## 查看运行结果
 
 ```text
-$codex-autoresearch 查看实验历史
-$codex-autoresearch 将实验历史导出为 TSV
-$codex-autoresearch 生成 HTML 报告
+$autoresearch 查看实验历史
+$autoresearch 将实验历史导出为 TSV
+$autoresearch 生成 HTML 报告
 ```
 
 历史表格和 HTML 都从验证后的事件动态生成。HTML 快照写入 `autoresearch-results/report.html`，不参与运行状态或恢复。

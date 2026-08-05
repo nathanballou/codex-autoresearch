@@ -1,4 +1,4 @@
-# Codex Autoresearch
+# Autoresearch
 
 [English](../../README.md) | **Русский**
 
@@ -13,7 +13,7 @@
 Установите в Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/autoresearch
 ```
 
 Рекомендуется открыть чистый Git-репозиторий с Full Access:
@@ -25,7 +25,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 Затем вызовите:
 
 ```text
-$codex-autoresearch уменьшить error_count из `python3 scripts/score.py` до 0
+$autoresearch уменьшить error_count из `python3 scripts/score.py` до 0
 ```
 
 До первой записи Codex подтверждает цель, область изменений, исходное значение, целевое значение, команду измерения, необязательный guard и foreground/background.
@@ -50,7 +50,7 @@ Codex отвечает за гипотезы и код. Управляющий �
 | Выполнение | Текущая задача Codex | Отдельный controller |
 | Продолжение | Официальный Codex Goal | Один worker `codex exec` на итерацию |
 | Назначение | Наблюдение и управление | Долгие и ночные запуски |
-| Управление | Пауза/возобновление Goal | Status/stop/resume через `$codex-autoresearch` |
+| Управление | Пауза/возобновление Goal | Status/stop/resume через `$autoresearch` |
 
 Foreground продолжается через официальный Goal. Background не создает Goal; продолжением управляет controller. Установка не меняет настройки Codex.
 
@@ -71,9 +71,9 @@ Foreground продолжается через официальный Goal. Back
 ## История и отчет
 
 ```text
-$codex-autoresearch show experiment history
-$codex-autoresearch export experiment history as TSV
-$codex-autoresearch generate an HTML report
+$autoresearch show experiment history
+$autoresearch export experiment history as TSV
+$autoresearch generate an HTML report
 ```
 
 Таблица и HTML-отчет строятся из проверенных событий. HTML-снимок сохраняется в `autoresearch-results/report.html` и не используется как состояние или источник восстановления.
