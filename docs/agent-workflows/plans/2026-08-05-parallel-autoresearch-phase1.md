@@ -248,6 +248,7 @@ Co-authored-by: Claude <noreply@anthropic.com>"
 - Create: `deprecated/background_2026_08_05.md`
 - Delete: `references/background.md`
 - Modify: `SKILL.md:20`
+- Modify: `CONTRIBUTING.md:13`
 - Modify: `tests/test_structure.py:18`
 - Modify: `scripts/validate_skill_structure.sh:14,35-39`
 
@@ -279,12 +280,20 @@ mkdir -p deprecated
 git mv references/background.md deprecated/background_2026_08_05.md
 ```
 
-- [ ] **Step 4: Remove the SKILL.md reference**
+- [ ] **Step 4: Remove the SKILL.md and CONTRIBUTING.md references**
 
 Delete line 20 of `SKILL.md`:
 
 ```
 - Read `references/background.md` only for a background run.
+```
+
+Then delete line 13 of `CONTRIBUTING.md` from its architecture tree, and change the `└──` connector on the preceding line so the tree still renders correctly:
+
+```text
+SKILL.md
+├── references/workflow.md
+└── references/experiment.md
 ```
 
 - [ ] **Step 5: Update the shell validator**
@@ -743,7 +752,9 @@ Moves schema and replay out of core so Phase 2 can grow the event model without 
 - Modify: `scripts/autoresearch.py:19-61`
 - Modify: `scripts/autoresearch_report.py`
 - Modify: `tests/test_structure.py:23-28`
-- Modify: `scripts/validate_skill_structure.sh:41-45,66-69`
+- Modify: `scripts/validate_skill_structure.sh:14-19,41-45,66-69`
+- Modify: `scripts/run_skill_e2e.sh:56-60`
+- Modify: `CONTRIBUTING.md:15-17`
 
 - [ ] **Step 1: Write the failing structure test**
 
@@ -885,7 +896,7 @@ if [[ "$runtime_script_count" -ne 4 ]]; then
 fi
 ```
 
-Add the new module to the `py_compile` call and the `required` array:
+Add the new module to the `py_compile` call:
 
 ```bash
 python3 -m py_compile \
@@ -895,7 +906,37 @@ python3 -m py_compile \
   "$ROOT/scripts/autoresearch_state.py"
 ```
 
+Add it to the `required` array too, after the `autoresearch_report.py` entry near line 19:
+
+```bash
+  "$ROOT/scripts/autoresearch_state.py"
+```
+
 Update the closing echo to say `4 runtime modules`.
+
+- [ ] **Step 7a: Add the new module to the e2e skill copier — this one is load-bearing**
+
+`scripts/run_skill_e2e.sh` builds a disposable copy of the skill to test against, and `copy_skill()` hardcodes the script list at lines 56-60. Without this edit the copied skill is missing `autoresearch_state.py` and `foreground-smoke` fails with `ModuleNotFoundError: No module named 'autoresearch_state'`.
+
+```bash
+  cp \
+    "$ROOT/scripts/autoresearch.py" \
+    "$ROOT/scripts/autoresearch_core.py" \
+    "$ROOT/scripts/autoresearch_report.py" \
+    "$ROOT/scripts/autoresearch_state.py" \
+    "$destination/scripts/"
+```
+
+- [ ] **Step 7b: Update the CONTRIBUTING.md module list**
+
+Replace lines 15-17 so the architecture section names four modules and no longer claims the CLI owns a detached controller:
+
+```text
+scripts/autoresearch.py         CLI entry point
+scripts/autoresearch_core.py    atomic IO, Git, and command primitives
+scripts/autoresearch_state.py   strict run and event schema, and state replay
+scripts/autoresearch_report.py  read-only terminal, TSV, and HTML views
+```
 
 - [ ] **Step 8: Verify no circular import**
 
@@ -931,6 +972,7 @@ Co-authored-by: Claude <noreply@anthropic.com>"
 - Modify: `docs/GUIDE.md`
 - Modify: `docs/EXAMPLES.md`
 - Modify: `README.md`
+- Modify: `CONTRIBUTING.md:39-40`
 
 - [ ] **Step 1: Write the failing size check**
 
@@ -970,6 +1012,34 @@ Apply one rule per hit:
 | foreground contrasted against background | rewrite as an unqualified statement |
 
 Leave `docs/i18n/README_*.md` untouched — the eight translations are updated in Phase 3. `test_local_markdown_links_resolve` does scan them via `docs.rglob("*.md")`, but their only local links are to `../../README.md`, `../EXAMPLES.md`, `../GUIDE.md`, and `../INSTALL.md`, all of which survive this phase. Their prose will describe a background mode that no longer exists until Phase 3 corrects it; that is a known, accepted gap for the duration of the branch.
+
+- [ ] **Step 4a: Remove the background design rules from `CONTRIBUTING.md`**
+
+Line 39 currently reads:
+
+```
+- Do not add custom Codex hooks. Foreground continuity belongs to official Goals; background continuity belongs to the controller.
+```
+
+Replace it with:
+
+```
+- Do not add custom Codex hooks. Continuity belongs to official Goals.
+```
+
+Delete line 40 entirely — it describes a controller that no longer exists:
+
+```
+- The background controller owns each worker process tree and must terminate it before stopping or failing.
+```
+
+Then check the rest of the file for surviving background language:
+
+```bash
+grep -n "background\|controller\|worker" CONTRIBUTING.md
+```
+
+Apply the same four-row rule table from Step 4 to each hit.
 
 - [ ] **Step 5: Verify the size limit and link integrity**
 
