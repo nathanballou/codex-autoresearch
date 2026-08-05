@@ -27,6 +27,7 @@ from autoresearch_core import (
     parse_json,
     parse_metric_output,
     paths_for,
+    process_alive,
     relative_log_path,
     require_clean_repo,
     require_artifacts_untracked,
@@ -196,6 +197,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_repo_argument(abandon_parser)
     abandon_parser.add_argument("--candidate", type=int, required=True)
     abandon_parser.add_argument("--reason", required=True)
+
+    reap_parser = subparsers.add_parser(
+        "reap", help="Resolve a candidate whose lease expired and free its slot."
+    )
+    add_repo_argument(reap_parser)
+    reap_parser.add_argument("--candidate", type=int, required=True)
+
+    reconcile_parser = subparsers.add_parser(
+        "reconcile", help="Report recoverable problems and clear a stale admission lock."
+    )
+    add_repo_argument(reconcile_parser)
 
     compute_parser = subparsers.add_parser(
         "compute", help="Inspect compute capacity. Reports only; never writes."
@@ -1628,7 +1640,7 @@ def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
         event="candidate_resolved",
         candidate=args.candidate,
         outcome="failed",
-        reason="no_change",
+        reason="abandoned",
         description=" ".join(args.reason.split()),
         trial_metric=None,
         retained_metric=decimal_json(state.metric),
@@ -1642,6 +1654,98 @@ def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
     release_slot(table, slot)
     save_slots(paths, table)
     return {"candidate": args.candidate, "outcome": "failed", "reason": event["reason"]}
+
+
+def reap_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Resolve a candidate whose lease lapsed, freeing its slot.
+    Args:
+    args: Parsed CLI arguments carrying the repository and candidate.
+    Return: The resolution receipt.
+
+    Reaping is always explicit. An expired lease is reported by status but never acted
+    on automatically, because the control plane cannot see worker processes and a slow
+    worker is indistinguishable from a dead one.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    table = load_slots(paths, run)
+    slot = slot_for_candidate(table, args.candidate)
+    if not lease_expired(slot, now=time.time()):
+        raise AutoresearchError(
+            f"Candidate {args.candidate} still holds a valid lease until "
+            f"{slot['lease_expires_at']}. Wait for it, or have the worker abandon it."
+        )
+    append_event(
+        paths,
+        run,
+        events,
+        event="candidate_resolved",
+        candidate=args.candidate,
+        outcome="failed",
+        reason="lease_expired",
+        description=f"lease expired while held by {slot['agent_ref'] or 'an unbound agent'}",
+        trial_metric=None,
+        retained_metric=decimal_json(state.metric),
+        trial_commit=None,
+        trial_branch=slot["branch"],
+        head=state.head,
+        guard="not_run",
+        verify_log=None,
+        guard_log=None,
+    )
+    release_slot(table, slot)
+    save_slots(paths, table)
+    return {"candidate": args.candidate, "outcome": "failed", "reason": "lease_expired"}
+
+
+def reconcile_run(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Report recoverable problems and clear a stale admission lock.
+    Args:
+    args: Parsed CLI arguments carrying the repository.
+    Return: What was found and what was cleared.
+
+    Nothing is silently repaired. Reapable candidates and broken slots are reported for
+    an explicit decision; only a lock whose holder is provably gone is cleared here.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    table = load_slots(paths, run)
+    now = time.time()
+
+    reapable: list[int] = []
+    broken: list[int] = []
+    for slot in table["slots"]:
+        if lease_expired(slot, now=now):
+            reapable.append(slot["candidate"])
+        worktree = Path(slot["worktree"])
+        if slot["candidate"] is not None and not worktree.exists():
+            slot["state"] = "broken"
+            broken.append(slot["slot"])
+
+    cleared_lock = None
+    lock = read_admission_lock(paths)
+    if lock is not None and not process_alive(lock["pid"]):
+        release_admission_lock(paths)
+        cleared_lock = lock
+
+    divergence = sorted(
+        set(state.unresolved)
+        ^ {slot["candidate"] for slot in table["slots"] if slot["candidate"] is not None}
+    )
+    save_slots(paths, table)
+    return {
+        "status": state.status,
+        "reapable_candidates": reapable,
+        "broken_slots": broken,
+        "cleared_stale_lock": cleared_lock,
+        "slots_events_divergence": divergence,
+        "instruction": (
+            "Events are authoritative. Reap expired candidates explicitly; a broken "
+            "slot is never reused."
+        ),
+    }
 
 
 def report_compute(args: argparse.Namespace) -> dict[str, Any]:
@@ -1750,6 +1854,10 @@ def main() -> int:
         output = extend_lease(args)
     elif args.command == "abandon":
         output = abandon_candidate(args)
+    elif args.command == "reap":
+        output = reap_candidate(args)
+    elif args.command == "reconcile":
+        output = reconcile_run(args)
     elif args.command == "compute":
         output = report_compute(args)
     elif args.command == "decide":

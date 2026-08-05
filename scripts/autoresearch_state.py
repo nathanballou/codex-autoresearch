@@ -160,6 +160,8 @@ CANDIDATE_REASONS = {
     "rebase_conflict": "discarded",
     "guard_failed": "discarded",
     "no_change": "failed",
+    "abandoned": "failed",
+    "lease_expired": "failed",
 }
 
 EVENT_FIELDS = {

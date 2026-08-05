@@ -608,6 +608,28 @@ def revert_trial(repo: Path, trial_commit: str) -> str:
     return git_head(repo)
 
 
+def process_alive(pid: int) -> bool:
+    """
+    Report whether a process id is still running.
+    Args:
+    pid: Process identifier to probe.
+    Return: True when the process exists.
+
+    Used only for the admission lock, whose holder is a real CLI process. Worker
+    liveness cannot use this: the control plane does not own worker processes, so
+    workers are tracked by lease instead.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def process_group_alive(process_group_id: int) -> bool:
     if os.name == "nt" or process_group_id <= 0:
         return False
