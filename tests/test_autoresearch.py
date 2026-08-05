@@ -582,6 +582,12 @@ class AutoresearchTest(unittest.TestCase):
         self.assertIn("max_candidates", run)
         self.assertNotIn("max_iterations", run)
 
+    def test_background_subcommands_are_gone(self) -> None:
+        for command in ("launch", "stop", "_controller"):
+            result = self.cli(command, "--repo", str(self.repo), check=False)
+            self.assertNotEqual(0, result.returncode, f"{command} should not exist")
+            self.assertIn("invalid choice", result.stderr)
+
     def test_status_has_no_runtime_section(self) -> None:
         self.init()
         status = json.loads(self.cli("status", "--repo", str(self.repo)).stdout)
