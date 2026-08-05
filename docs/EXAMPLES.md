@@ -71,7 +71,7 @@ Target: 200
 Guard: python3 -m pytest tests/search -q
 ```
 
-Stabilize fixtures, warmup, sample count, and machine load before launch. A noisy benchmark produces untrustworthy keeps and discards.
+Stabilize fixtures, warmup, sample count, and machine load before starting a run. A noisy benchmark produces untrustworthy keeps and discards.
 
 ## Optimize a Noisy Multi-Metric Scheduler
 
@@ -129,31 +129,11 @@ Use only a scanner or test harness whose numeric output is stable. A broad subje
 
 ```text
 You: $codex-autoresearch reduce parser allocations from 14 to 5
-Codex: [shows baseline, target, scope, verify, guard, and mode]
-You: Foreground. Go.
+Codex: [shows baseline, target, scope, verify, and guard]
+You: Go.
 ```
 
 Pause through the normal Codex Goal controls when you want to redirect the strategy. On resume, the skill validates the event log before continuing.
-
-## Background Overnight
-
-```text
-You: $codex-autoresearch get lint_warning_count to 0
-Codex: [shows confirmed run]
-You: Background with Full Access. Go.
-```
-
-Later:
-
-```text
-$codex-autoresearch show status
-```
-
-If blocked, provide a direction with resume:
-
-```text
-$codex-autoresearch resume; generated files are authoritative, do not edit them
-```
 
 ## Review A Run
 

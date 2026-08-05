@@ -22,9 +22,9 @@ Codex scans the repository and confirms seven values before writing:
 | Target | Number that means done | `0` |
 | Guard | Optional baseline-passing regression check | `npm test` |
 
-You also choose foreground or background and may set an iteration limit.
+You may set a candidate limit.
 
-Autoresearch requires a clean named branch. Commit or stash existing changes before launch. Scope entries are path prefixes, not globs: use `src` rather than `src/**/*.ts`.
+Autoresearch requires a clean named branch. Commit or stash existing changes before starting a run. Scope entries are path prefixes, not globs: use `src` rather than `src/**/*.ts`.
 
 ## Metric Output
 
@@ -57,7 +57,7 @@ Guard:  python3 -m pytest -q          -> exit code 0
 
 The guard is optional, but if configured it must pass at baseline. An improved metric with a failing guard is reverted.
 
-## Foreground
+## Experiment Loop
 
 Foreground stays in the current Codex task. After you approve the run, the skill initializes the baseline and creates or reuses an official Codex Goal. Goal continuation keeps the loop moving and supports Codex's normal pause and resume experience.
 
@@ -72,28 +72,6 @@ Each iteration:
 
 The Goal is marked complete only after the retained metric reaches the confirmed target.
 
-## Background
-
-Background launches a detached controller and returns the TUI to you. The controller starts one fresh `codex exec` worker for one experiment, validates its event, then starts the next worker if the run remains active.
-
-This process hierarchy is intentional:
-
-```text
-your Codex task -> controller -> one worker at a time
-```
-
-Background defaults to Full Access so the worker can commit and revert. You may explicitly choose `workspace-write`, but sandbox restrictions around `.git` can stop the run. There is no automatic permission fallback.
-
-Use the skill itself for control:
-
-```text
-$codex-autoresearch show the background status
-$codex-autoresearch stop the background run
-$codex-autoresearch resume with this direction: focus on parser allocation
-```
-
-The foreground task does not need to poll the controller.
-
 ## Run States
 
 | Status | Meaning |
@@ -102,11 +80,11 @@ The foreground task does not need to poll the controller.
 | `initialization_failed` | Baseline setup failed; inspect diagnostics and archive before retrying |
 | `active` | More experiments may run |
 | `complete` | Retained metric reached target |
-| `stopped` | User stop or iteration limit |
+| `stopped` | User stop or candidate limit |
 | `blocked` | Progress requires an external change |
-| `error` | A command, Git, state, or worker contract failed |
+| `error` | A command, Git, or state contract failed |
 
-An unsuccessful hypothesis is `discard`, not `blocked`. Background `orphaned` means events still say active but the recorded controller is gone. Inspect the reported worker PID and runtime log. If no worker is alive, stop can close the event state; a live orphaned worker must exit or be terminated before stop, resume, or archive.
+An unsuccessful hypothesis is `discard`, not `blocked`.
 
 ## Artifacts
 
@@ -117,16 +95,14 @@ autoresearch-results/
 ├── run.json
 ├── events.jsonl
 ├── logs/
-├── runtime.json       # background only
-├── runtime.log        # background only
 └── report.html        # generated on request
 ```
 
-`run.json` is immutable configuration. `events.jsonl` is the append-only source of truth for current state. Logs contain complete command and worker output.
+`run.json` is immutable configuration. `events.jsonl` is the append-only source of truth for current state. Logs contain complete command output.
 
 Do not edit these files. A malformed or inconsistent file stops the run instead of being reconstructed. To start a different goal, ask the skill to archive the current run first; archives remain below `autoresearch-results/archive/`.
 
-If the current run is still active, stop a background run first. For foreground, clear the old Codex Goal with `/goal clear`, then ask the skill to archive the run and start the new goal.
+If the current run is still active, clear the old Codex Goal with `/goal clear`, then ask the skill to archive the run and start the new goal.
 
 ## History And Reports
 
@@ -168,8 +144,6 @@ Errors name the exact invariant and, for commands, the full log path. Status als
 - Baseline guard fails: repair the baseline or choose a valid guard.
 - Dirty or out-of-scope files: restore ownership boundaries; do not widen scope merely to hide the problem.
 - Command creates files: change the command so measurement is side-effect-free.
-- Worker produces no event: inspect its worker log; the controller stops rather than relaunching blindly.
-- Controller disappears: inspect both controller and worker liveness in status before recovery.
 - Rollback fails: recover Git manually and archive the run. An unverified trial cannot be resumed as retained state.
 
 ## Choosing A Task

@@ -1,6 +1,6 @@
 ---
 name: codex-autoresearch
-description: "Run autonomous, measurable experiments in a Git repository: change one hypothesis, verify a numeric metric, keep improvements, and revert failures. Use when the user wants Codex to keep iterating toward a numeric target in the foreground or as a detached background run. Do not use for ordinary one-shot coding, open-ended work without a mechanical metric, or non-Git directories."
+description: "Run autonomous, measurable experiments in a Git repository: change one hypothesis, verify a numeric metric, keep improvements, and revert failures. Use when the user wants Codex to keep iterating toward a numeric target in the foreground. Do not use for ordinary one-shot coding, open-ended work without a mechanical metric, or non-Git directories."
 metadata:
   short-description: "Run measurable autonomous experiments"
 ---
@@ -15,7 +15,7 @@ Codex supplies the engineering judgment. The bundled control script supplies str
 
 ## Load
 
-- Read `references/workflow.md` for every invocation, including status, history, report, stop, and resume.
+- Read `references/workflow.md` for every invocation, including status, history, report, and resume.
 - Read `references/experiment.md` before starting or continuing an active run.
 
 Resolve commands from this skill's own directory as `<skill-root>/scripts/autoresearch.py`. Never assume the target repository contains the script.
@@ -37,16 +37,13 @@ Resolve commands from this skill's own directory as `<skill-root>/scripts/autore
    - a command whose final non-empty stdout line is that number, or a JSON object plus one explicit key,
    - a numeric target,
    - an optional baseline-passing guard command,
-   - foreground or background,
-   - an optional iteration limit.
-4. Run candidate measurement commands read-only if needed, then show one concise confirmation. Include the baseline, target, scope, commands, mode, and the fact that each trial is committed and failed trials are reverted.
-5. Do not write project files, initialize artifacts, create a Goal, or launch a controller before clear user approval such as `go`.
+   - an optional candidate limit.
+4. Run candidate measurement commands read-only if needed, then show one concise confirmation. Include the baseline, target, scope, commands, and the fact that each trial is committed and failed trials are reverted.
+5. Do not write project files, initialize artifacts, or create a Goal before clear user approval such as `go`.
 
 ## Start
 
 After approval, use the exact confirmed values.
-
-### Foreground
 
 Initialize once:
 
@@ -55,29 +52,12 @@ python3 <skill-root>/scripts/autoresearch.py init \
   --repo <repo> --goal <goal> --scope <path> \
   --metric-name <name> --direction <lower|higher> \
   --verify <command> [--metric-key <key>] --target <number> \
-  [--guard <command>] [--max-iterations <n>]
+  [--guard <command>] [--max-candidates <n>]
 ```
 
 Then call `get_goal`. Reuse a matching unfinished Goal, otherwise call `create_goal`. The Goal objective must identify this as codex-autoresearch, include the returned run id, metric and target, and say to continue the validated experiment loop until terminal status. If a different unfinished Goal exists, stop and explain the conflict. Official Codex Goal continuation owns foreground persistence; this skill does not install hooks or modify Codex configuration.
 
 If Goal tools are unavailable, do not claim the foreground run can continue autonomously across turns. Explain that the installed Codex does not expose the required Goal capability.
-
-### Background
-
-Launch once with the same configuration:
-
-```bash
-python3 <skill-root>/scripts/autoresearch.py launch \
-  --repo <repo> --goal <goal> --scope <path> \
-  --metric-name <name> --direction <lower|higher> \
-  --verify <command> [--metric-key <key>] --target <number> \
-  [--guard <command>] [--max-iterations <n>] \
-  --execution-policy <danger-full-access|workspace-write>
-```
-
-Background defaults to `danger-full-access`; show this in the confirmation. Use `workspace-write` only when the user explicitly prefers the sandbox and accepts that Git operations may be restricted. Do not create a Codex Goal for background runs.
-
-After a successful launch, report the run id, baseline, controller PID, results path, and status command. Do not poll unless asked.
 
 ## Experiment Loop
 
@@ -110,15 +90,14 @@ Then call `update_goal(status="blocked")`. A failed hypothesis, difficult bug, o
 - History request: run `history --repo <repo>`; use `--format tsv` only for tabular export.
 - HTML report request: run `report --repo <repo>` and return its generated path. Both views validate the complete event history; neither is runtime state.
 - Same foreground goal: validate `status`, resume the matching official Goal, and continue.
-- Background `status`, `stop`, or `resume`: use the corresponding script command. Resume requires a user note or new direction.
-- Different goal: show the current run. Stop a live background run first; for an active foreground run, ask the user to clear its official Goal with `/goal clear`. Then ask before `archive` and initialize the fresh run.
+- Different goal: show the current run. Ask the user to clear its official Goal with `/goal clear`. Then ask before `archive` and initialize the fresh run.
 - `complete`: never resume it. Archive before a new goal.
-- Invalid JSON, unknown schema, event gap, Git mismatch, stale controller, out-of-scope change, or malformed metric output: stop and report the exact error and log path. Never reconstruct, guess, or silently repair state.
+- Invalid JSON, unknown schema, event gap, Git mismatch, out-of-scope change, or malformed metric output: stop and report the exact error and log path. Never reconstruct, guess, or silently repair state.
 - A failed initialization may leave `init-error.json` and command logs but no `run.json`. Report the diagnostic and use explicit `archive` before retrying; do not treat it as a fresh run.
 
 ## Invariants
 
-1. Ask before the first write or launch.
+1. Ask before the first write.
 2. Require a clean named Git branch at initialization.
 3. Keep one authoritative configuration in `run.json` and one append-only state history in `events.jsonl`.
 4. Use one numeric metric and one target. A guard is pass/fail and must pass at baseline.
@@ -126,5 +105,5 @@ Then call `update_goal(status="blocked")`. A failed hypothesis, difficult bug, o
 6. Never stage autoresearch artifacts or touch paths outside confirmed scope.
 7. Verification commands must exit zero, emit UTF-8, and use an explicit scalar or JSON-key parser. Parsing or command errors stop the run.
 8. Never hide failures with fallback parsing, old-layout recovery, or synthetic success.
-9. Never ask "should I continue?" after launch. Continue until target, user stop, iteration limit, or a verified external blocker.
-10. Preserve command output and controller events under `autoresearch-results/` for diagnosis.
+9. Never ask "should I continue?" once the run is initialized. Continue until target, user stop, candidate limit, or a verified external blocker.
+10. Preserve command output under `autoresearch-results/` for diagnosis.

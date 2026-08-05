@@ -32,12 +32,11 @@ Do not introduce a second state snapshot or reconstruct events from logs. Logs e
 
 - Fail on malformed or contradictory input. Do not add fallback parsing.
 - Fix the owning state transition, not one caller's symptom.
-- Record full command/controller diagnostics before returning an error.
+- Record full command diagnostics before returning an error.
 - Keep the initial `SKILL.md` below Codex's 8,000-byte selected-skill prompt limit.
 - Keep references one level from `SKILL.md` and avoid duplicated rules.
 - Preserve one repository, one metric, one target, and one finalized experiment per iteration.
-- Do not add custom Codex hooks. Foreground continuity belongs to official Goals; background continuity belongs to the controller.
-- The background controller owns each worker process tree and must terminate it before stopping or failing.
+- Do not add custom Codex hooks. Continuity belongs to official Goals.
 - Do not add compatibility branches for unreleased schemas. A schema change must fail clearly and require an explicit fresh run.
 
 ## Validate
@@ -54,7 +53,7 @@ Behavioral changes:
 bash scripts/run_contributor_gate.sh skill
 ```
 
-The skill gate runs strict unit tests plus deterministic foreground and background smoke tests. Real-model checks require local Codex authentication and are available separately through `scripts/run_skill_e2e.sh`.
+The skill gate runs strict unit tests plus a deterministic foreground smoke test. Real-model checks require local Codex authentication and are available separately through `scripts/run_skill_e2e.sh`.
 
 ## Pull Requests
 
