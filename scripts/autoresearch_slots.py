@@ -125,6 +125,96 @@ def load_slots(paths: Paths, run: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def unresolved_from(events: list[dict[str, Any]]) -> list[int]:
+    """
+    Compute the in-flight candidate set from an in-memory event list.
+    Args:
+    events: Event list, which may include events not yet replayed.
+    Return: Sorted ids started but not resolved.
+
+    Used where re-deriving state would be wrong or impossible, such as while appending
+    the terminal event that replay is waiting for.
+    """
+    started = {e["candidate"] for e in events if e["event"] == "candidate_started"}
+    resolved = {e["candidate"] for e in events if e["event"] == "candidate_resolved"}
+    return sorted(started - resolved)
+
+
+def slots_lock_path(paths: Paths) -> Path:
+    """
+    Resolve the slot table's mutation lock.
+    Args:
+    paths: Resolved run paths.
+    Return: Path to the lock file.
+    """
+    return paths.root / "slots.lock"
+
+
+def acquire_slots_lock(paths: Paths, *, wait_seconds: float = 30.0) -> None:
+    """
+    Serialize read-modify-write cycles on the slot table.
+    Args:
+    paths: Resolved run paths.
+    wait_seconds: How long to wait for a competing update.
+    Return: None.
+
+    Concurrent candidates each rewrite the whole table, so without this a slower
+    process silently reinstates a slot another process just released.
+    """
+    path = slots_lock_path(paths)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise AutoresearchError(
+                    f"Timed out waiting {wait_seconds:.0f}s for the slot table lock at {path}"
+                ) from None
+            time.sleep(0.02)
+            continue
+        os.write(descriptor, str(os.getpid()).encode("utf-8"))
+        os.close(descriptor)
+        return
+
+
+def release_slots_lock(paths: Paths) -> None:
+    """
+    Release the slot table lock.
+    Args:
+    paths: Resolved run paths.
+    Return: None.
+    """
+    path = slots_lock_path(paths)
+    if path.exists():
+        path.unlink()
+
+
+def update_slot(paths: Paths, run: dict[str, Any], for_candidate: int, **changes: Any) -> None:
+    """
+    Apply changes to one candidate's slot under the table lock.
+    Args:
+    paths: Resolved run paths.
+    run: Validated run configuration.
+    for_candidate: Candidate whose slot changes.
+    changes: Field updates to apply.
+    Return: None.
+    """
+    acquire_slots_lock(paths)
+    try:
+        table = load_slots(paths, run)
+        for slot in table["slots"]:
+            if slot["candidate"] == for_candidate:
+                slot.update(**changes)
+                break
+        else:
+            raise AutoresearchError(f"Candidate {for_candidate} does not hold a slot")
+        save_slots(paths, table)
+    finally:
+        release_slots_lock(paths)
+
+
 def save_slots(paths: Paths, table: dict[str, Any]) -> None:
     """
     Persist the slot table.

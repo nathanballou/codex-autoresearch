@@ -67,6 +67,8 @@ from autoresearch_slots import (
     release_admission_lock,
     save_slots,
     slots_path,
+    unresolved_from,
+    update_slot,
 )
 from autoresearch_docs import (
     DECISIONS_FILE,
@@ -799,8 +801,7 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
         )
     require_paths_in_scope(changed, run["scope"])
 
-    slot["state"] = "measuring"
-    save_slots(paths, table)
+    update_slot(paths, run, args.candidate, state="measuring")
     trial_commit = commit_trial(worktree, paths=changed, description=args.description)
     verify_log = next_command_log(paths, args.candidate, "verify")
     trial_metric = measure_in(
@@ -836,8 +837,21 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
             verify_log=relative_log_path(paths, verify_log),
             guard_log=relative_log_path(paths, guard_log),
         )
-        release_slot(table, slot)
-        save_slots(paths, table)
+        # Keep the in-memory log in step, or a following terminal event computes its
+        # sequence number from a list that is already one event behind the file.
+        events.append(event)
+        update_slot(
+            paths,
+            run,
+            args.candidate,
+            state="idle",
+            candidate=None,
+            role=None,
+            grant=None,
+            agent_ref=None,
+            claimed_at=None,
+            lease_expires_at=None,
+        )
         return event
 
     if not improved(trial_metric, base_metric, run["metric"]["direction"]):
@@ -858,8 +872,7 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
             "retained_metric": decimal_json(state.metric),
         }
 
-    slot["state"] = "admitting"
-    save_slots(paths, table)
+    update_slot(paths, run, args.candidate, state="admitting")
     acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
     try:
         paths, run, events, state = load_context(repo)
@@ -965,7 +978,7 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
                     reason="retained metric satisfies the target",
                     head=admitted_commit,
                     metric=decimal_json(measured),
-                    unresolved_candidates=list(load_context(repo)[3].unresolved),
+                    unresolved_candidates=unresolved_from(events),
                 )
             )
             status = "complete"
