@@ -17,7 +17,6 @@ Codex supplies the engineering judgment. The bundled control script supplies str
 
 - Read `references/workflow.md` for every invocation, including status, history, report, stop, and resume.
 - Read `references/experiment.md` before starting or continuing an active run.
-- Read `references/background.md` only for a background run.
 
 Resolve commands from this skill's own directory as `<skill-root>/scripts/autoresearch.py`. Never assume the target repository contains the script.
 

@@ -9,8 +9,7 @@ Read the architecture and design rules below before changing code or protocol.
 ```text
 SKILL.md
 ├── references/workflow.md
-├── references/experiment.md
-└── references/background.md
+└── references/experiment.md
 
 scripts/autoresearch.py         CLI and detached controller
 scripts/autoresearch_core.py    strict schema, Git, commands, and events
