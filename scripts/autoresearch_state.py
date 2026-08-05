@@ -156,6 +156,8 @@ EVENT_COMMON = {"schema_version", "run_id", "seq", "time", "event"}
 CANDIDATE_REASONS = {
     "improved": "admitted",
     "no_improvement": "discarded",
+    "stale_no_improvement": "discarded",
+    "rebase_conflict": "discarded",
     "guard_failed": "discarded",
     "no_change": "failed",
 }

@@ -461,6 +461,7 @@ def run_command(
     cwd: Path,
     timeout_seconds: int,
     log_path: Path,
+    environment: dict[str, str] | None = None,
 ) -> CommandResult:
     started = time.monotonic()
     popen_kwargs: dict[str, Any] = {
@@ -469,6 +470,10 @@ def run_command(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
     }
+    if environment:
+        # Advisory: the command is told its compute share and may honor it. Nothing
+        # here enforces the share, because enforcement is not portable.
+        popen_kwargs["env"] = {**os.environ, **environment}
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:

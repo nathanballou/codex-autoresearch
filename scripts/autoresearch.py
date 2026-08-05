@@ -46,6 +46,7 @@ from autoresearch_core import (
 from autoresearch_allocator import choose_role
 from autoresearch_bank import (
     allocate_grant,
+    grant_environment,
     bank_capacity,
     compute_path,
     detect_local_capacity,
@@ -685,6 +686,287 @@ def recorded_doc_digests(run: dict[str, Any], events: list[dict[str, Any]]) -> d
         if event["event"] == "decision":
             digests["decisions_sha256"] = event["decisions_sha256"]
     return digests
+
+
+def measure_in(
+    *,
+    worktree: Path,
+    run: dict[str, Any],
+    paths: Paths,
+    expected_head: str,
+    branch: str,
+    log_path: Path,
+    label: str,
+    grant: dict[str, Any],
+) -> Any:
+    """
+    Run the verify command inside one worktree and parse its metric.
+    Args:
+    worktree: Directory the command runs in.
+    run: Validated run configuration.
+    paths: Resolved run paths.
+    expected_head: Commit the worktree must still be on afterwards.
+    branch: Branch the worktree must still be on afterwards.
+    log_path: Where to record command output.
+    label: Human label used in error messages.
+    grant: Compute grant exported to the command environment.
+    Return: The parsed metric.
+
+    The command must leave both the worktree and the primary checkout untouched. A
+    verify command that wanders into the primary repository is an error, not a surprise.
+    """
+    primary_head = git_head(paths.repo)
+    control_snapshot = control_state_snapshot(paths)
+    result = run_command(
+        command=run["metric"]["command"],
+        cwd=worktree,
+        timeout_seconds=run["timeout_seconds"],
+        log_path=log_path,
+        environment=grant_environment(grant),
+    )
+    require_control_state_unchanged(
+        paths, control_snapshot, command_name=label, log_path=log_path
+    )
+    require_command_preserved_repository(
+        worktree,
+        expected_head=expected_head,
+        expected_branch=branch,
+        command_name=label,
+        log_path=log_path,
+    )
+    if git_head(paths.repo) != primary_head:
+        raise AutoresearchError(
+            f"{label} moved the primary repository from {primary_head} to "
+            f"{git_head(paths.repo)}. Full output: {log_path}"
+        )
+    return parse_metric_output(result, json_key=run["metric"]["json_key"])
+
+
+def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Commit, measure, and admit or discard one claimed candidate.
+    Args:
+    args: Parsed CLI arguments carrying the repository, candidate, and description.
+    Return: The resolution receipt.
+
+    Measurement happens before the admission lock is taken, because measurement is the
+    slow step and holding the lock across it would serialize the feature away. Two
+    candidates may both measure an improvement and race for the lock; they serialize,
+    and the loser finds a moved frontier and takes the stale path.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, events, state = load_context(repo)
+    if state.status != "active":
+        raise AutoresearchError(f"Cannot finish a candidate while run status is {state.status}")
+    require_docs_match(repo, recorded_doc_digests(run, events))
+    if args.candidate in {
+        event["candidate"] for event in events if event["event"] == "candidate_resolved"
+    }:
+        raise AutoresearchError(
+            f"Candidate {args.candidate} is already resolved. A late finish from a "
+            f"reaped or abandoned worker can never admit stale work."
+        )
+    table = load_slots(paths, run)
+    slot = slot_for_candidate(table, args.candidate)
+    started = next(
+        event
+        for event in events
+        if event["event"] == "candidate_started" and event["candidate"] == args.candidate
+    )
+    worktree = Path(slot["worktree"])
+    branch = slot["branch"]
+    grant = slot["grant"]
+    base_commit = started["base_commit"]
+    base_metric = parse_decimal(started["base_metric"], field="candidate.base_metric")
+
+    changed = working_paths(worktree)
+    if not changed:
+        raise AutoresearchError(
+            f"Candidate {args.candidate} made no changes in {worktree}. Use abandon "
+            f"if there is nothing to try."
+        )
+    require_paths_in_scope(changed, run["scope"])
+
+    slot["state"] = "measuring"
+    save_slots(paths, table)
+    trial_commit = commit_trial(worktree, paths=changed, description=args.description)
+    verify_log = next_command_log(paths, args.candidate, "verify")
+    trial_metric = measure_in(
+        worktree=worktree,
+        run=run,
+        paths=paths,
+        expected_head=trial_commit,
+        branch=branch,
+        log_path=verify_log,
+        label="Metric command",
+        grant=grant,
+    )
+
+    def resolve(outcome: str, reason: str, *, metric: Any, head: str, guard: str,
+                guard_log: Path | None, rebased: str | None = None) -> dict[str, Any]:
+        event = append_event(
+            paths,
+            run,
+            events,
+            event="candidate_resolved",
+            candidate=args.candidate,
+            outcome=outcome,
+            reason=reason,
+            description=" ".join(args.description.split()),
+            trial_metric=decimal_json(metric) if metric is not None else None,
+            retained_metric=decimal_json(
+                trial_metric if outcome == "admitted" else state.metric
+            ),
+            trial_commit=rebased or trial_commit,
+            trial_branch=branch,
+            head=head,
+            guard=guard,
+            verify_log=relative_log_path(paths, verify_log),
+            guard_log=relative_log_path(paths, guard_log),
+        )
+        release_slot(table, slot)
+        save_slots(paths, table)
+        return event
+
+    if not improved(trial_metric, base_metric, run["metric"]["direction"]):
+        resolve(
+            "discarded",
+            "no_improvement",
+            metric=trial_metric,
+            head=state.head,
+            guard="not_run",
+            guard_log=None,
+        )
+        return {
+            "status": "active",
+            "candidate": args.candidate,
+            "outcome": "discarded",
+            "reason": "no_improvement",
+            "trial_metric": decimal_json(trial_metric),
+            "retained_metric": decimal_json(state.metric),
+        }
+
+    slot["state"] = "admitting"
+    save_slots(paths, table)
+    acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
+    try:
+        paths, run, events, state = load_context(repo)
+        frontier, frontier_metric = state.head, state.metric
+        admitted_commit = trial_commit
+        measured = trial_metric
+        rebase_log: Path | None = None
+
+        if base_commit != frontier:
+            rebase = run_git(worktree, "rebase", "--onto", frontier, base_commit, branch,
+                             check=False)
+            if rebase.returncode != 0:
+                run_git(worktree, "rebase", "--abort", check=False)
+                resolve(
+                    "discarded",
+                    "rebase_conflict",
+                    metric=trial_metric,
+                    head=frontier,
+                    guard="not_run",
+                    guard_log=None,
+                )
+                return {
+                    "status": "active",
+                    "candidate": args.candidate,
+                    "outcome": "discarded",
+                    "reason": "rebase_conflict",
+                }
+            admitted_commit = git_head(worktree)
+            rebase_log = next_command_log(paths, args.candidate, "rebase-verify")
+            measured = measure_in(
+                worktree=worktree,
+                run=run,
+                paths=paths,
+                expected_head=admitted_commit,
+                branch=branch,
+                log_path=rebase_log,
+                label="Rebase metric command",
+                grant=grant,
+            )
+            if not improved(measured, frontier_metric, run["metric"]["direction"]):
+                resolve(
+                    "discarded",
+                    "no_improvement",
+                    metric=measured,
+                    head=frontier,
+                    guard="not_run",
+                    guard_log=None,
+                )
+                return {
+                    "status": "active",
+                    "candidate": args.candidate,
+                    "outcome": "discarded",
+                    "reason": "stale_no_improvement",
+                    "trial_metric": decimal_json(measured),
+                }
+
+        guard_status = "pass"
+        guard_log: Path | None = None
+        if run["guard"]:
+            guard_log = next_command_log(paths, args.candidate, "guard")
+            guard_result = run_command(
+                command=run["guard"],
+                cwd=worktree,
+                timeout_seconds=run["timeout_seconds"],
+                log_path=guard_log,
+                environment=grant_environment(grant),
+            )
+            guard_status = "pass" if guard_result.returncode == 0 else "fail"
+            if guard_status == "fail":
+                resolve(
+                    "discarded",
+                    "guard_failed",
+                    metric=measured,
+                    head=frontier,
+                    guard="fail",
+                    guard_log=guard_log,
+                )
+                return {
+                    "status": "active",
+                    "candidate": args.candidate,
+                    "outcome": "discarded",
+                    "reason": "guard_failed",
+                }
+
+        run_git(repo, "merge", "--ff-only", admitted_commit)
+        trial_metric = measured
+        resolve(
+            "admitted",
+            "improved",
+            metric=measured,
+            head=admitted_commit,
+            guard=guard_status,
+            guard_log=guard_log,
+            rebased=admitted_commit,
+        )
+        status = "active"
+        target = parse_decimal(run["target"], field="run.target")
+        if target_reached(measured, target, run["metric"]["direction"]):
+            events.append(
+                append_event(
+                    paths, run, events,
+                    event="complete",
+                    reason="retained metric satisfies the target",
+                    head=admitted_commit,
+                    metric=decimal_json(measured),
+                    unresolved_candidates=list(load_context(repo)[3].unresolved),
+                )
+            )
+            status = "complete"
+        return {
+            "status": status,
+            "candidate": args.candidate,
+            "outcome": "admitted",
+            "trial_metric": decimal_json(measured),
+            "retained_metric": decimal_json(measured),
+            "head": admitted_commit,
+        }
+    finally:
+        release_admission_lock(paths)
 
 
 def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
@@ -1446,7 +1728,9 @@ def main() -> int:
     if args.command == "init":
         output = initialize_run(args)
     elif args.command == "finish":
-        output = finish_candidate(args)
+        output = (
+            finish_claimed_candidate(args) if args.candidate else finish_candidate(args)
+        )
     elif args.command == "block":
         output = block_run(args)
     elif args.command == "status":
