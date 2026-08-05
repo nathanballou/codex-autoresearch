@@ -17,6 +17,7 @@ Codex supplies the engineering judgment. The bundled control script supplies str
 
 - Read `references/workflow.md` for every invocation, including status, history, report, and resume.
 - Read `references/experiment.md` before starting or continuing an active run.
+- Read `references/parallel.md` before claiming work, since candidates run in parallel by default.
 
 Resolve commands from this skill's own directory as `<skill-root>/scripts/autoresearch.py`. Never assume the target repository contains the script.
 
@@ -38,7 +39,7 @@ Resolve commands from this skill's own directory as `<skill-root>/scripts/autore
    - a numeric target,
    - an optional baseline-passing guard command,
    - an optional candidate limit.
-4. Run candidate measurement commands read-only if needed, then show one concise confirmation. Include the baseline, target, scope, commands, and the fact that each trial is committed and failed trials are reverted.
+4. Run candidate measurement commands read-only if needed, then show one concise confirmation. Include the baseline, target, scope, commands, and the fact that each trial is committed and failed trials keep their commit on a candidate branch while the frontier stays put.
 5. Do not write project files, initialize artifacts, or create a Goal before clear user approval such as `go`.
 
 ## Start
@@ -52,8 +53,14 @@ python3 <skill-root>/scripts/autoresearch.py init \
   --repo <repo> --goal <goal> --scope <path> \
   --metric-name <name> --direction <lower|higher> \
   --verify <command> [--metric-key <key>] --target <number> \
-  [--guard <command>] [--max-candidates <n>]
+  --max-parallel <n|bank> --worktree-root <dir-outside-repo> \
+  --lease-seconds <n> --window <n> --min-per-role <n> --plateau-k <n> \
+  [--guard <command>] [--prepare <command>] [--max-candidates <n>]
 ```
+
+Every parallelism value is explicit; nothing is defaulted. Run `compute detect` first
+and write `autoresearch/compute.json` from what it reports. `autoresearch/goal.md`
+must exist and state the overarching goal.
 
 Then call `get_goal`. Reuse a matching unfinished Goal, otherwise call `create_goal`. The Goal objective must identify this as codex-autoresearch, include the returned run id, metric and target, and say to continue the validated experiment loop until terminal status. If a different unfinished Goal exists, stop and explain the conflict. Official Codex Goal continuation owns foreground persistence; this skill does not install hooks or modify Codex configuration.
 
@@ -61,19 +68,36 @@ If Goal tools are unavailable, do not claim the foreground run can continue auto
 
 ## Experiment Loop
 
-For each foreground iteration:
+Candidates run in parallel. Read `references/parallel.md` before your first claim.
 
-1. Read validated status and recent events.
-2. Inspect evidence and choose one focused hypothesis that differs from discarded attempts.
-3. Modify only confirmed scopes. Do not manually commit, revert, or edit `autoresearch-results/`.
-4. Finalize exactly once:
+1. Claim slots and receive one worker packet each:
 
    ```bash
-   python3 <skill-root>/scripts/autoresearch.py finish \
-     --repo <repo> --description <short-description>
+   python3 <skill-root>/scripts/autoresearch.py claim --repo <repo> --count <n>
    ```
 
-`finish` checks scope and Git provenance, creates the trial commit, runs the metric and guard, keeps an improvement, reverts a failed trial, appends the audit event, and marks the run complete when the target is reached.
+2. Spawn one subagent per packet, concurrently, using your host's own primitive. Pass
+   each packet through verbatim; you do not write the worker prompt. Record each agent
+   id with `bind`.
+3. As each worker returns, claim again to refill that slot immediately. Do not wait
+   for the whole batch.
+4. Curate `decisions.md` with `decide --add` when you learn something every future
+   worker needs. Never edit it by hand.
+
+Each worker finalizes its own candidate:
+
+```bash
+python3 <skill-root>/scripts/autoresearch.py finish \
+  --repo <repo> --candidate <id> --description <short-description>
+```
+
+`finish` checks scope and Git provenance, commits and measures inside that
+candidate's worktree, rebases and re-measures if the frontier moved underneath it,
+runs the guard, admits a genuine improvement, and marks the run complete on target. A
+discarded candidate keeps its commit on its own branch and leaves the frontier alone.
+
+Without `--candidate` the run degrades to one sequential candidate in the primary
+checkout, for hosts that cannot spawn concurrent subagents.
 
 Continue immediately while status is `active`. On `complete`, verify status, call `update_goal(status="complete")`, and summarize the baseline, final metric, iterations, and retained commits.
 

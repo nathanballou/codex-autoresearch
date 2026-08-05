@@ -15,7 +15,7 @@ class StructureTest(unittest.TestCase):
 
     def test_reference_surface_is_intentionally_small(self) -> None:
         references = sorted(path.name for path in (ROOT / "references").glob("*.md"))
-        self.assertEqual(["experiment.md", "workflow.md"], references)
+        self.assertEqual(["experiment.md", "parallel.md", "workflow.md"], references)
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         for reference in references:
             self.assertIn(f"references/{reference}", skill)
