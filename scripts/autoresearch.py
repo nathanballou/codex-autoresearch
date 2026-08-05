@@ -4,17 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import os
-import shlex
 import shutil
-import signal
-import subprocess
-import sys
 import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 from autoresearch_core import (
     AutoresearchError,
@@ -22,7 +17,6 @@ from autoresearch_core import (
     RunState,
     SCHEMA_VERSION,
     append_event,
-    append_json_line,
     commit_trial,
     decimal_json,
     git_branch,
@@ -30,15 +24,12 @@ from autoresearch_core import (
     improved,
     json_text,
     load_context,
-    load_run,
-    load_runtime,
     next_command_log,
     normalize_scopes,
     parse_decimal,
     parse_json,
     parse_metric_output,
     paths_for,
-    process_alive,
     relative_log_path,
     require_clean_repo,
     require_artifacts_untracked,
@@ -51,12 +42,10 @@ from autoresearch_core import (
     run_command,
     status_payload,
     target_reached,
-    terminate_process_tree,
     utc_now,
     validate_run,
     working_paths,
     write_json_atomic,
-    write_runtime,
     write_text_atomic,
 )
 from autoresearch_report import render_history_table, render_history_tsv, render_html_report
@@ -98,9 +87,6 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Validate and initialize a run.")
     add_run_arguments(init_parser)
 
-    launch_parser = subparsers.add_parser("launch", help="Initialize and detach a background run.")
-    add_run_arguments(launch_parser)
-
     finish_parser = subparsers.add_parser(
         "finish", help="Commit, verify, and keep or revert one focused experiment."
     )
@@ -111,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_repo_argument(block_parser)
     block_parser.add_argument("--reason", required=True)
 
-    status_parser = subparsers.add_parser("status", help="Print validated run and runtime status.")
+    status_parser = subparsers.add_parser("status", help="Print validated run status.")
     add_repo_argument(status_parser)
 
     history_parser = subparsers.add_parser(
@@ -125,9 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_repo_argument(report_parser)
 
-    stop_parser = subparsers.add_parser("stop", help="Stop a detached background run.")
-    add_repo_argument(stop_parser)
-
     resume_parser = subparsers.add_parser("resume", help="Resume a stopped or blocked run.")
     add_repo_argument(resume_parser)
     resume_parser.add_argument("--note", required=True)
@@ -136,11 +119,6 @@ def build_parser() -> argparse.ArgumentParser:
         "archive", help="Archive the current run before starting a different one."
     )
     add_repo_argument(archive_parser)
-
-    controller_parser = subparsers.add_parser(
-        "_controller", help="Internal entry point for the detached background controller."
-    )
-    add_repo_argument(controller_parser)
 
     return parser
 
@@ -681,7 +659,7 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
             run,
             events,
             event="stopped",
-            reason="configured iteration limit reached",
+            reason="configured candidate limit reached",
             head=head,
             metric=decimal_json(retained_metric),
         )
@@ -817,602 +795,6 @@ def generate_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def runtime_event(paths: Paths, event: str, **fields: Any) -> None:
-    append_json_line(
-        paths.runtime_log,
-        {"time": utc_now(), "source": "controller", "event": event, **fields},
-    )
-
-
-def write_stop_request(paths: Paths, run: dict[str, Any]) -> None:
-    write_json_atomic(
-        paths.stop_request,
-        {"run_id": run["run_id"], "requested_at": utc_now()},
-    )
-
-
-def consume_stop_request(paths: Paths, run: dict[str, Any]) -> bool:
-    if not paths.stop_request.exists():
-        return False
-    try:
-        text = paths.stop_request.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise AutoresearchError(f"Cannot read {paths.stop_request}: {exc}") from exc
-    payload = parse_json(text, source=str(paths.stop_request))
-    if not isinstance(payload, dict):
-        raise AutoresearchError(f"{paths.stop_request} must contain a JSON object")
-    require_exact_keys(
-        payload,
-        required={"run_id", "requested_at"},
-        source=str(paths.stop_request),
-    )
-    if payload["run_id"] != run["run_id"]:
-        raise AutoresearchError(
-            f"{paths.stop_request}.run_id does not match the active run"
-        )
-    if not isinstance(payload["requested_at"], str) or not payload["requested_at"]:
-        raise AutoresearchError(f"{paths.stop_request}.requested_at must be a non-empty string")
-    paths.stop_request.unlink()
-    return True
-
-
-def worker_prompt(repo: Path, script: Path, run: dict[str, Any], state: RunState) -> str:
-    python_command = shlex.quote(sys.executable)
-    script_command = shlex.quote(str(script))
-    repo_argument = shlex.quote(str(repo))
-    metric_parser = (
-        "final non-empty scalar line"
-        if run["metric"]["json_key"] is None
-        else f"JSON key {run['metric']['json_key']}"
-    )
-    guard = run["guard"] or "none"
-    return f"""You are one background iteration worker for a codex-autoresearch run.
-
-Repository: {repo}
-Control script: {script}
-Goal: {run['goal']}
-Current metric: {decimal_json(state.metric)}
-Target: {run['target']} ({run['metric']['direction']} is better)
-Verify command: {run['metric']['command']} ({metric_parser})
-Guard command: {guard}
-Allowed paths: {', '.join(run['scope'])}
-
-Rules:
-1. Run `{python_command} {script_command} status --repo {repo_argument}` and inspect the repository and prior events.
-2. Choose one focused, evidence-based experiment that differs from previous discarded attempts.
-3. Modify only allowed paths. Do not commit, revert, or edit autoresearch-results yourself.
-4. Finalize exactly once with `{python_command} {script_command} finish --repo {repo_argument} --description <short-description>`.
-5. If and only if no experiment is possible without external input or an environment change, leave the repo clean and run `{python_command} {script_command} block --repo {repo_argument} --reason <precise-reason>`.
-6. Do not ask the user questions and do not create or update a Codex Goal. Exit immediately after finish or block.
-"""
-
-
-def controller_command(run: dict[str, Any], repo: Path, last_message: Path) -> list[str]:
-    command = [
-        run["background"]["codex_bin"],
-        "exec",
-        "-C",
-        str(repo),
-        "--ephemeral",
-        "--json",
-        "--output-last-message",
-        str(last_message),
-    ]
-    if run["background"]["model"]:
-        command.extend(["--model", run["background"]["model"]])
-    if run["background"]["execution_policy"] == "danger-full-access":
-        command.append("--dangerously-bypass-approvals-and-sandbox")
-    else:
-        command.extend(["--sandbox", "workspace-write"])
-    command.append("-")
-    return command
-
-
-def record_controller_error(repo: Path, reason: str, log: Path | None = None) -> None:
-    paths, run, events, state = load_context(repo)
-    if state.status != "active":
-        return
-    current_head = git_head(repo)
-    if current_head != state.head:
-        reason += f"; Git HEAD drifted to {current_head}, retained HEAD is {state.head}"
-    append_error(
-        paths=paths,
-        run=run,
-        events=events,
-        state=state,
-        reason=reason,
-        head=state.head,
-        log=log,
-    )
-
-
-def run_controller(repo: Path) -> int:
-    paths, run, events, state = load_context(repo)
-    if state.status != "active":
-        return 0
-
-    started_at = utc_now()
-    controller_pid = os.getpid()
-    child: subprocess.Popen[str] | None = None
-    stopping = False
-
-    def request_stop(_signum: int, _frame: Any) -> None:
-        nonlocal stopping
-        stopping = True
-
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
-    startup_deadline = time.monotonic() + 5
-    while time.monotonic() < startup_deadline:
-        runtime = load_runtime(paths, run_id=run["run_id"])
-        if runtime and runtime["controller_pid"] == controller_pid:
-            break
-        time.sleep(0.02)
-    else:
-        raise AutoresearchError("Controller startup record was not written by the launcher")
-    write_runtime(
-        paths,
-        run,
-        controller_pid=controller_pid,
-        child_pid=None,
-        state="running",
-        started_at=started_at,
-    )
-    runtime_event(paths, "controller_started", pid=controller_pid)
-    script = Path(__file__).resolve()
-
-    while True:
-        paths, run, events, state = load_context(repo)
-        if state.status != "active":
-            write_runtime(
-                paths,
-                run,
-                controller_pid=controller_pid,
-                child_pid=None,
-                state="stopped",
-                started_at=started_at,
-            )
-            runtime_event(paths, "controller_finished", run_status=state.status)
-            return 0
-        require_clean_repo(repo, expected_head=state.head, expected_branch=run["branch"])
-        require_no_staged_artifacts(repo)
-        if consume_stop_request(paths, run):
-            stopping = True
-        if stopping:
-            append_event(
-                paths,
-                run,
-                events,
-                event="stopped",
-                reason="stopped by user",
-                head=state.head,
-                metric=decimal_json(state.metric),
-            )
-            continue
-
-        iteration = state.iterations + 1
-        worker_sequence = len(events)
-        worker_log = paths.logs / f"worker-{worker_sequence:04d}.jsonl"
-        last_message = paths.logs / f"worker-{worker_sequence:04d}-last-message.txt"
-        command = controller_command(run, repo, last_message)
-        prompt = worker_prompt(repo, script, run, state)
-        before_count = len(events)
-        runtime_event(
-            paths,
-            "worker_started",
-            worker=iteration,
-            sequence=worker_sequence,
-            command=command,
-            log=str(worker_log),
-        )
-        with worker_log.open("ab") as output:
-            worker_kwargs: dict[str, Any] = {
-                "cwd": repo,
-                "stdin": subprocess.PIPE,
-                "stdout": output,
-                "stderr": subprocess.STDOUT,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "strict",
-            }
-            if os.name == "nt":
-                worker_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                worker_kwargs["start_new_session"] = True
-            child = subprocess.Popen(command, **worker_kwargs)
-            try:
-                write_runtime(
-                    paths,
-                    run,
-                    controller_pid=controller_pid,
-                    child_pid=child.pid,
-                    state="running",
-                    started_at=started_at,
-                )
-                if child.stdin is None:
-                    raise AutoresearchError("Worker stdin pipe was not created")
-                child.stdin.write(prompt)
-                child.stdin.close()
-                while child.poll() is None:
-                    if consume_stop_request(paths, run):
-                        stopping = True
-                    if stopping:
-                        runtime_event(paths, "worker_stop_requested", pid=child.pid)
-                        terminate_process_tree(child)
-                        runtime_event(
-                            paths,
-                            "worker_terminated",
-                            pid=child.pid,
-                            returncode=child.returncode,
-                        )
-                    time.sleep(0.1)
-                returncode = child.returncode
-                if returncode is None:
-                    raise AutoresearchError("Worker exited without a return code")
-            except Exception as worker_error:
-                cleanup_errors: list[str] = []
-                try:
-                    terminate_process_tree(child)
-                except Exception as cleanup_error:
-                    cleanup_errors.append(f"process cleanup failed: {cleanup_error}")
-                try:
-                    runtime_event(
-                        paths,
-                        "worker_cleanup_after_controller_error",
-                        pid=child.pid,
-                        returncode=child.returncode,
-                        error_type=type(worker_error).__name__,
-                        message=str(worker_error),
-                        cleanup_errors=cleanup_errors,
-                    )
-                except Exception as log_error:
-                    cleanup_errors.append(f"cleanup logging failed: {log_error}")
-                if cleanup_errors:
-                    raise AutoresearchError(
-                        f"Worker control failed: {worker_error}; " + "; ".join(cleanup_errors)
-                    ) from worker_error
-                raise
-        child = None
-        write_runtime(
-            paths,
-            run,
-            controller_pid=controller_pid,
-            child_pid=None,
-            state="stopping" if stopping else "running",
-            started_at=started_at,
-        )
-        runtime_event(
-            paths,
-            "worker_finished",
-            worker=iteration,
-            sequence=worker_sequence,
-            returncode=returncode,
-            log=str(worker_log),
-        )
-
-        paths, run, after_events, after_state = load_context(repo)
-        if stopping:
-            if after_state.status == "active":
-                require_clean_repo(repo, expected_head=after_state.head, expected_branch=run["branch"])
-                append_event(
-                    paths,
-                    run,
-                    after_events,
-                    event="stopped",
-                    reason="stopped by user",
-                    head=after_state.head,
-                    metric=decimal_json(after_state.metric),
-                )
-            continue
-        if returncode != 0:
-            record_controller_error(
-                repo,
-                f"codex exec worker {iteration} exited with code {returncode}",
-                worker_log,
-            )
-            continue
-
-        new_events = after_events[before_count:]
-        event_types = [event["event"] for event in new_events]
-        allowed = ["iteration"]
-        if event_types not in (allowed, ["iteration", "complete"], ["iteration", "stopped"], ["blocked"], ["error"]):
-            reason = (
-                f"worker {iteration} violated the one-iteration contract; "
-                f"new events: {event_types}"
-            )
-            runtime_event(
-                paths,
-                "worker_contract_violation",
-                worker=iteration,
-                events=event_types,
-                log=str(worker_log),
-            )
-            if after_state.status != "active":
-                raise AutoresearchError(reason)
-            record_controller_error(repo, reason, worker_log)
-
-
-def controller_entry(repo: Path) -> int:
-    paths = paths_for(repo)
-    try:
-        return run_controller(repo)
-    except Exception as exc:
-        runtime_event(
-            paths,
-            "controller_error",
-            error_type=type(exc).__name__,
-            message=str(exc),
-            traceback=traceback.format_exc(),
-        )
-        try:
-            record_controller_error(repo, f"controller failed: {exc}", paths.runtime_log)
-        except Exception as record_error:
-            runtime_event(
-                paths,
-                "controller_error_record_failed",
-                error_type=type(record_error).__name__,
-                message=str(record_error),
-                traceback=traceback.format_exc(),
-            )
-        try:
-            paths_loaded, run = load_run(repo)
-            runtime = load_runtime(paths_loaded, run_id=run["run_id"])
-            started_at = utc_now() if runtime is None else runtime["started_at"]
-            write_runtime(
-                paths_loaded,
-                run,
-                controller_pid=os.getpid(),
-                child_pid=None,
-                state="error",
-                started_at=started_at,
-            )
-        except Exception as runtime_error:
-            runtime_event(
-                paths,
-                "runtime_error_record_failed",
-                error_type=type(runtime_error).__name__,
-                message=str(runtime_error),
-                traceback=traceback.format_exc(),
-            )
-        return 1
-
-
-def fail_controller_start(
-    paths: Paths,
-    run: dict[str, Any],
-    process: subprocess.Popen[Any],
-    started_at: str,
-    reason: str,
-) -> NoReturn:
-    failures: list[str] = []
-    if process.poll() is None:
-        try:
-            terminate_process_tree(process)
-        except Exception as exc:
-            failures.append(f"controller process cleanup failed: {exc}")
-    failure_reason = reason
-    if failures:
-        failure_reason += "; " + "; ".join(failures)
-
-    try:
-        runtime_event(
-            paths,
-            "controller_start_failed",
-            pid=process.pid,
-            returncode=process.returncode,
-            reason=failure_reason,
-            cleanup_failed=bool(failures),
-        )
-    except Exception as exc:
-        failures.append(f"runtime log write failed: {exc}")
-    try:
-        record_controller_error(paths.repo, failure_reason, paths.runtime_log)
-    except Exception as exc:
-        failures.append(f"event error record failed: {exc}")
-    try:
-        write_runtime(
-            paths,
-            run,
-            controller_pid=process.pid,
-            child_pid=None,
-            state="error",
-            started_at=started_at,
-        )
-    except Exception as exc:
-        failures.append(f"runtime state write failed: {exc}")
-    if failures:
-        failure_reason = reason + "; " + "; ".join(failures)
-    raise AutoresearchError(f"{failure_reason}. Inspect {paths.runtime_log}")
-
-
-def fail_controller_spawn(paths: Paths, reason: str) -> NoReturn:
-    failures: list[str] = []
-    try:
-        runtime_event(paths, "controller_spawn_failed", reason=reason)
-    except Exception as exc:
-        failures.append(f"runtime log write failed: {exc}")
-    try:
-        record_controller_error(paths.repo, reason, paths.runtime_log)
-    except Exception as exc:
-        failures.append(f"event error record failed: {exc}")
-    if failures:
-        reason += "; " + "; ".join(failures)
-    raise AutoresearchError(f"{reason}. Inspect {paths.runtime_log}")
-
-
-def spawn_controller(repo: Path) -> dict[str, Any]:
-    paths, run, _, state = load_context(repo)
-    if state.status != "active":
-        return {"status": state.status, "controller_pid": None}
-    if paths.stop_request.exists():
-        raise AutoresearchError(
-            f"Stale stop request exists at {paths.stop_request}; resolve or archive it before launch"
-        )
-    runtime = load_runtime(paths, run_id=run["run_id"])
-    if runtime is not None and runtime["controller_pid"] and process_alive(runtime["controller_pid"]):
-        raise AutoresearchError(f"Background controller is already running as PID {runtime['controller_pid']}")
-    if runtime is not None and runtime["child_pid"] and process_alive(runtime["child_pid"]):
-        raise AutoresearchError(
-            f"Recorded worker PID {runtime['child_pid']} is still alive without a usable controller. "
-            f"Inspect {paths.runtime_log} and stop that process before resuming."
-        )
-
-    script = Path(__file__).resolve()
-    command = [sys.executable, str(script), "_controller", "--repo", str(repo)]
-    popen_kwargs: dict[str, Any] = {
-        "cwd": repo,
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        popen_kwargs["start_new_session"] = True
-    try:
-        process = subprocess.Popen(command, **popen_kwargs)
-    except OSError as exc:
-        fail_controller_spawn(paths, f"Failed to start background controller: {exc}")
-    started_at = utc_now()
-    try:
-        write_runtime(
-            paths,
-            run,
-            controller_pid=process.pid,
-            child_pid=None,
-            state="starting",
-            started_at=started_at,
-        )
-    except Exception as exc:
-        fail_controller_start(
-            paths,
-            run,
-            process,
-            started_at,
-            f"Failed to write controller startup state: {exc}",
-        )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            _, _, _, current_state = load_context(repo)
-        except Exception as exc:
-            fail_controller_start(
-                paths,
-                run,
-                process,
-                started_at,
-                f"Failed to validate controller startup state: {exc}",
-            )
-        if current_state.status != "active":
-            if current_state.status == "error":
-                fail_controller_start(
-                    paths,
-                    run,
-                    process,
-                    started_at,
-                    "Background controller failed during startup",
-                )
-            return {
-                "status": current_state.status,
-                "controller_pid": process.pid,
-                "results": str(paths.root),
-                "runtime_log": str(paths.runtime_log),
-            }
-        if process.poll() is not None:
-            fail_controller_start(
-                paths,
-                run,
-                process,
-                started_at,
-                f"Background controller exited during startup with code {process.returncode}",
-            )
-        try:
-            runtime = load_runtime(paths, run_id=run["run_id"])
-        except Exception as exc:
-            fail_controller_start(
-                paths,
-                run,
-                process,
-                started_at,
-                f"Failed to validate controller runtime state: {exc}",
-            )
-        if runtime and runtime["controller_pid"] == process.pid and runtime["state"] == "running":
-            if process.poll() is not None:
-                fail_controller_start(
-                    paths,
-                    run,
-                    process,
-                    started_at,
-                    f"Background controller exited during startup with code {process.returncode}",
-                )
-            return {
-                "status": "running",
-                "controller_pid": process.pid,
-                "results": str(paths.root),
-                "runtime_log": str(paths.runtime_log),
-            }
-        time.sleep(0.05)
-    fail_controller_start(
-        paths,
-        run,
-        process,
-        started_at,
-        "Background controller did not become ready within 5 seconds",
-    )
-
-
-def launch_background(args: argparse.Namespace) -> dict[str, Any]:
-    initialized = initialize_run(args)
-    if initialized["status"] == "complete":
-        return initialized
-    started = spawn_controller(Path(args.repo).expanduser().resolve())
-    return {**initialized, **started}
-
-
-def stop_background(args: argparse.Namespace) -> dict[str, Any]:
-    repo = Path(args.repo).expanduser().resolve()
-    paths, run, events, state = load_context(repo)
-    if state.status != "active":
-        return {"status": state.status, "message": "Run is not active"}
-    runtime = load_runtime(paths, run_id=run["run_id"])
-    controller_pid = None if runtime is None else runtime["controller_pid"]
-    child_pid = None if runtime is None else runtime["child_pid"]
-    if controller_pid is None or not process_alive(controller_pid):
-        if child_pid is not None and process_alive(child_pid):
-            raise AutoresearchError(
-                f"Controller is gone but worker PID {child_pid} is still alive. "
-                f"Inspect {paths.runtime_log} and terminate that worker before stopping the run."
-            )
-        require_clean_repo(repo, expected_head=state.head, expected_branch=run["branch"])
-        if paths.stop_request.exists():
-            consume_stop_request(paths, run)
-        append_event(
-            paths,
-            run,
-            events,
-            event="stopped",
-            reason="stopped by user after detecting an orphaned controller",
-            head=state.head,
-            metric=decimal_json(state.metric),
-        )
-        return {"status": "stopped", "controller_pid": None}
-
-    pid = controller_pid
-    write_stop_request(paths, run)
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        if not process_alive(pid):
-            _, _, _, final_state = load_context(repo)
-            if final_state.status == "active":
-                raise AutoresearchError(
-                    f"Controller {pid} exited without recording a terminal event. "
-                    f"Inspect {paths.runtime_log}"
-                )
-            return {"status": final_state.status, "controller_pid": pid}
-        time.sleep(0.1)
-    raise AutoresearchError(f"Controller {pid} did not stop within 15 seconds")
-
-
 def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     paths, run, events, state = load_context(repo)
@@ -1423,7 +805,7 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
         raise AutoresearchError("A completed run cannot be resumed; archive it and start a new goal")
     if run["max_candidates"] is not None and state.iterations >= run["max_candidates"]:
         raise AutoresearchError(
-            "The configured iteration limit has been reached; archive this run and confirm a new limit"
+            "The configured candidate limit has been reached; archive this run and confirm a new limit"
         )
     if (
         state.status == "error"
@@ -1437,8 +819,6 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     if state.status == "active":
         raise AutoresearchError("Foreground run is already active")
     require_clean_repo(repo, expected_head=state.head, expected_branch=run["branch"])
-    if paths.stop_request.exists():
-        consume_stop_request(paths, run)
     event = append_event(
         paths,
         run,
@@ -1450,7 +830,6 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     )
     return {
         "status": "active",
-        "mode": "foreground",
         "note": event["note"],
         "instruction": "Reuse or create the matching Codex Goal, then continue the experiment loop.",
     }
@@ -1461,14 +840,6 @@ def archive_run(args: argparse.Namespace) -> dict[str, Any]:
     paths = paths_for(repo)
     if not paths.root.exists():
         raise AutoresearchError(f"No autoresearch results directory at {paths.root}")
-    if paths.runtime.exists():
-        runtime = load_runtime(paths)
-        if runtime and runtime["controller_pid"] and process_alive(runtime["controller_pid"]):
-            raise AutoresearchError("Stop the background controller before archiving")
-        if runtime and runtime["child_pid"] and process_alive(runtime["child_pid"]):
-            raise AutoresearchError(
-                f"Cannot archive while recorded worker PID {runtime['child_pid']} is still alive"
-            )
     archive_root = paths.root / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
     archive_id = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
@@ -1493,8 +864,6 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "init":
         output = initialize_run(args)
-    elif args.command == "launch":
-        output = launch_background(args)
     elif args.command == "finish":
         output = finish_iteration(args)
     elif args.command == "block":
@@ -1506,14 +875,10 @@ def main() -> int:
         return 0
     elif args.command == "report":
         output = generate_report(args)
-    elif args.command == "stop":
-        output = stop_background(args)
     elif args.command == "resume":
         output = resume_run(args)
     elif args.command == "archive":
         output = archive_run(args)
-    elif args.command == "_controller":
-        return controller_entry(Path(args.repo).expanduser().resolve())
     else:
         raise AutoresearchError(f"Unsupported command: {args.command}")
     print_json(output)

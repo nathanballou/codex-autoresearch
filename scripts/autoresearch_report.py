@@ -513,7 +513,7 @@ def render_html_report(
         <dt>Scope</dt><dd><code>{_escape(', '.join(run['scope']))}</code></dd>
         <dt>Verify</dt><dd><code>{_escape(run['metric']['command'])}</code></dd>
         <dt>Guard</dt><dd><code>{_escape(guard)}</code></dd>
-        <dt>Iteration limit</dt><dd>{_escape(iteration_limit)}</dd>
+        <dt>Candidate limit</dt><dd>{_escape(iteration_limit)}</dd>
       </dl>
     </section>
     <footer>Generated {_escape(generated_at)} from validated <code>run.json</code> and <code>events.jsonl</code>.</footer>
