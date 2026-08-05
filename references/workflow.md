@@ -23,13 +23,12 @@ Scope: ...
 Metric: ... (baseline ..., target ..., lower/higher is better)
 Verify: ...
 Guard: ... / none
-Mode: foreground / background
 Rollback: failed trials are reverted with Git
 ```
 
 If the target, scope, or external side effects are ambiguous, ask about those. Do not ask users to choose internal protocol details.
 
-## Foreground
+## Starting The Run
 
 After approval:
 
@@ -41,17 +40,10 @@ After approval:
 
 An Escape interruption pauses official Goal execution. On a resumed task, validate the run with `status` before continuing. Do not create a second Goal for the same run.
 
-## Background
-
-After approval, run `launch` once. The detached controller owns continuation; the foreground task should return control to the user after the launch receipt.
-
 Use the same skill entry for controls:
 
 - "status" -> `status --repo <repo>`
-- "stop" -> `stop --repo <repo>`
 - "resume with this direction" -> `resume --repo <repo> --note <direction>`
-
-Read `background.md` before launching or controlling a detached run.
 
 ## Read-Only Views
 
@@ -67,15 +59,13 @@ Each command validates `run.json` and the complete `events.jsonl` before renderi
 
 Always trust validated events, not conversational memory.
 
-- `active` foreground: continue in the current/resumed Goal task.
-- `active` background with runtime `running`: report status; do not launch another controller.
-- `active` background with runtime `orphaned`: report whether the recorded worker is still alive. Never resume or archive while an orphaned worker is alive. Once no worker remains, `stop` can close the event state before resume.
-- `blocked`: after the external cause changes, run `resume --repo <repo> --note <what-changed>`. A foreground run then continues through the same official Goal; a background run starts a new controller.
+- `active`: continue in the current/resumed Goal task.
+- `blocked`: after the external cause changes, run `resume --repo <repo> --note <what-changed>`. The run then continues through the same official Goal.
 - `error`: resume with the same command only when status reports a consistent repository and no unreverted trial. Otherwise recover Git manually and archive the run.
-- `stopped`: a user-stopped background run may resume with a note. A run stopped by its iteration limit must be archived and started again with a newly confirmed limit.
+- `stopped`: a user-stopped run may resume with a note. A run stopped by its candidate limit must be archived and started again with a newly confirmed limit.
 - `complete`: report the result; archive before a different goal.
 
-If the user wants a different goal, stop a live background controller first. For an active foreground run, ask the user to clear the old official Goal with `/goal clear`; the control script cannot own TUI Goal state. Then ask before running `archive`. Archiving is explicit because it changes the active run, though it preserves all prior artifacts.
+If the user wants a different goal, ask them to clear the old official Goal with `/goal clear`; the control script cannot own TUI Goal state. Then ask before running `archive`. Archiving is explicit because it changes the active run, though it preserves all prior artifacts.
 
 If initialization failed before `run.json` was written, surface `init-error.json` and its command logs. Archive that failed attempt explicitly before retrying.
 

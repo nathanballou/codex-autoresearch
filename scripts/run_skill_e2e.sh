@@ -189,11 +189,6 @@ subjects = subprocess.check_output(
 )
 if subjects.count("autoresearch:") < expected:
     raise SystemExit(f"missing retained autoresearch commits: {subjects}")
-worker_logs = sorted((repo / "autoresearch-results" / "logs").glob("worker-*.jsonl"))
-if status["mode"] == "background" and len(worker_logs) != expected:
-    raise SystemExit(f"expected {expected} worker logs, found {worker_logs}")
-if any(path.stat().st_size == 0 for path in worker_logs):
-    raise SystemExit(f"empty worker log found: {worker_logs}")
 PY
 }
 

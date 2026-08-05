@@ -1,6 +1,6 @@
 # Experiment Contract
 
-Read this before any active foreground iteration. Background workers receive the same contract from the controller.
+Read this before any active iteration.
 
 ## Source Of Truth
 
@@ -34,7 +34,7 @@ The verify command must:
 
 The guard is different: its exit code is the result. It must pass at baseline. A trial with an improved metric but failing guard is discarded.
 
-If a benchmark is noisy, fix the benchmark methodology or choose a stable aggregate before launch. Do not reinterpret a worse number as success inside the loop.
+If a benchmark is noisy, fix the benchmark methodology or choose a stable aggregate before starting a run. Do not reinterpret a worse number as success inside the loop.
 
 ## Git Boundary
 
@@ -52,10 +52,10 @@ Failed trials use `git revert`, preserving a visible audit trail without destruc
 
 Fail immediately on malformed JSON, duplicate keys, unknown schema fields, missing or partial event lines, invalid transitions, nonnumeric metrics, command timeout, non-UTF-8 output, unexpected Git state, or rollback failure.
 
-Do not reconstruct missing state from logs, infer a metric from prose, skip a failed guard, or mark work complete because a worker ran out of time. Full verify/guard output lives under `autoresearch-results/logs/`; background lifecycle events live in `runtime.log`.
+Do not reconstruct missing state from logs, infer a metric from prose, skip a failed guard, or mark work complete because the run ran out of time. Full verify/guard output lives under `autoresearch-results/logs/`.
 
 ## Blocked
 
 A difficult problem is still active. A run is blocked only when every meaningful experiment depends on unavailable human information, credentials, data, hardware, service access, or another external state change.
 
-For foreground Goals, confirm that the same blocker persists across three consecutive Goal turns before recording `block` and marking the Goal blocked. For background, a worker may block only with a precise, actionable reason and a clean repository.
+Confirm that the same blocker persists across three consecutive Goal turns before recording `block` and marking the Goal blocked. A run may block only with a precise, actionable reason and a clean repository.
