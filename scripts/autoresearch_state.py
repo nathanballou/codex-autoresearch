@@ -94,27 +94,42 @@ def validate_run(payload: Any, *, source: str) -> dict[str, Any]:
 
 
 EVENT_COMMON = {"schema_version", "run_id", "seq", "time", "event"}
+CANDIDATE_REASONS = {
+    "improved": "admitted",
+    "no_improvement": "discarded",
+    "guard_failed": "discarded",
+    "no_change": "failed",
+}
+
 EVENT_FIELDS = {
     "baseline": {"head", "metric", "verify_log", "guard_log"},
-    "iteration": {
-        "iteration",
+    "candidate_started": {"candidate", "base_commit", "base_metric"},
+    "candidate_resolved": {
+        "candidate",
         "outcome",
+        "reason",
         "description",
-        "previous_metric",
         "trial_metric",
         "retained_metric",
         "trial_commit",
+        "trial_branch",
         "head",
-        "revert_commit",
         "guard",
         "verify_log",
         "guard_log",
     },
-    "blocked": {"reason", "head", "metric"},
-    "complete": {"reason", "head", "metric"},
-    "error": {"reason", "head", "metric", "trial_commit", "revert_commit", "log"},
+    "blocked": {"reason", "head", "metric", "unresolved_candidates"},
+    "complete": {"reason", "head", "metric", "unresolved_candidates"},
+    "error": {
+        "reason",
+        "head",
+        "metric",
+        "trial_commit",
+        "log",
+        "unresolved_candidates",
+    },
     "resumed": {"note", "head", "metric"},
-    "stopped": {"reason", "head", "metric"},
+    "stopped": {"reason", "head", "metric", "unresolved_candidates"},
 }
 
 
@@ -150,30 +165,46 @@ def validate_event(payload: Any, *, run_id: str, expected_seq: int, source: str)
             not isinstance(payload["guard_log"], str) or not payload["guard_log"]
         ):
             raise AutoresearchError(f"{source}.guard_log must be null or a non-empty string")
-    if event_type == "iteration":
-        if payload["outcome"] not in {"keep", "discard"}:
-            raise AutoresearchError(f"{source}.outcome must be keep or discard")
+    if event_type == "candidate_started":
+        if not isinstance(payload["candidate"], int) or payload["candidate"] <= 0:
+            raise AutoresearchError(f"{source}.candidate must be a positive integer")
+        if not isinstance(payload["base_commit"], str) or not payload["base_commit"]:
+            raise AutoresearchError(f"{source}.base_commit must be a non-empty string")
+    if event_type == "candidate_resolved":
+        if payload["reason"] not in CANDIDATE_REASONS:
+            raise AutoresearchError(
+                f"{source}.reason must be one of {', '.join(sorted(CANDIDATE_REASONS))}"
+            )
+        if payload["outcome"] != CANDIDATE_REASONS[payload["reason"]]:
+            raise AutoresearchError(
+                f"{source}.outcome must be {CANDIDATE_REASONS[payload['reason']]} "
+                f"for reason {payload['reason']}"
+            )
         if payload["guard"] not in {"pass", "fail", "not_run"}:
             raise AutoresearchError(f"{source}.guard is invalid")
-        if not isinstance(payload["iteration"], int) or payload["iteration"] <= 0:
-            raise AutoresearchError(f"{source}.iteration must be a positive integer")
-        for key in ("description", "trial_commit", "verify_log"):
+        if not isinstance(payload["candidate"], int) or payload["candidate"] <= 0:
+            raise AutoresearchError(f"{source}.candidate must be a positive integer")
+        for key in ("description", "trial_commit", "trial_branch", "verify_log"):
             if not isinstance(payload[key], str) or not payload[key]:
                 raise AutoresearchError(f"{source}.{key} must be a non-empty string")
-        for key in ("revert_commit", "guard_log"):
-            if payload[key] is not None and (not isinstance(payload[key], str) or not payload[key]):
-                raise AutoresearchError(f"{source}.{key} must be null or a non-empty string")
+        if payload["guard_log"] is not None and (
+            not isinstance(payload["guard_log"], str) or not payload["guard_log"]
+        ):
+            raise AutoresearchError(f"{source}.guard_log must be null or a non-empty string")
     if event_type in {"blocked", "complete", "error", "stopped"}:
         if not isinstance(payload["reason"], str) or not payload["reason"].strip():
             raise AutoresearchError(f"{source}.reason must be a non-empty string")
+        unresolved = payload["unresolved_candidates"]
+        if not isinstance(unresolved, list) or any(
+            not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in unresolved
+        ):
+            raise AutoresearchError(
+                f"{source}.unresolved_candidates must be a list of positive integers"
+            )
     if event_type == "error":
-        for key in ("trial_commit", "revert_commit", "log"):
+        for key in ("trial_commit", "log"):
             if payload[key] is not None and (not isinstance(payload[key], str) or not payload[key]):
                 raise AutoresearchError(f"{source}.{key} must be null or a non-empty string")
-        if payload["trial_commit"] is None and payload["revert_commit"] is not None:
-            raise AutoresearchError(f"{source}.revert_commit requires trial_commit")
-        if payload["revert_commit"] is not None and payload["head"] != payload["revert_commit"]:
-            raise AutoresearchError(f"{source}.head must equal revert_commit after rollback")
     if event_type == "resumed" and (
         not isinstance(payload["note"], str) or not payload["note"].strip()
     ):
@@ -236,9 +267,11 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
     if run["guard"] is not None and events[0]["guard_log"] is None:
         raise AutoresearchError("Baseline is missing its configured guard log")
     iterations = 0
+    started = 0
+    unresolved: dict[int, dict[str, Any]] = {}
     status = "active"
     last_terminal: str | None = None
-    last_terminal_event: dict[str, Any] | None = None
+    unrolled_back_error = False
 
     for event in events[1:]:
         event_type = event["event"]
@@ -247,80 +280,102 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
                 raise AutoresearchError(
                     f"Invalid event transition: {event_type} follows terminal event {last_terminal}"
                 )
-            if (
-                last_terminal == "error"
-                and last_terminal_event is not None
-                and last_terminal_event["trial_commit"] is not None
-                and last_terminal_event["revert_commit"] is None
-            ):
-                raise AutoresearchError("Cannot resume an error with an unreverted trial commit")
+            if unrolled_back_error:
+                raise AutoresearchError("Cannot resume an error whose trial commit was not rolled back")
             status = "active"
             last_terminal = None
-            last_terminal_event = None
         elif event_type == "resumed":
             raise AutoresearchError("resumed event requires a preceding blocked, error, or stopped event")
 
-        if event_type == "iteration":
+        if event_type == "candidate_started":
+            started += 1
+            if event["candidate"] != started:
+                raise AutoresearchError(
+                    f"Candidate id must be {started}, got {event['candidate']}"
+                )
+            if event["base_commit"] != head:
+                raise AutoresearchError(
+                    f"Candidate {started} base_commit does not match the frontier commit"
+                )
+            base_metric = parse_decimal(
+                event["base_metric"], field="candidate_started.base_metric"
+            )
+            if base_metric != metric:
+                raise AutoresearchError(
+                    f"Candidate {started} base_metric does not match the frontier metric"
+                )
+            unresolved[started] = event
+        elif event_type == "candidate_resolved":
+            candidate = event["candidate"]
+            if candidate not in unresolved:
+                raise AutoresearchError(
+                    f"Candidate {candidate} resolved without a matching unresolved start"
+                )
+            del unresolved[candidate]
             iterations += 1
-            if event["iteration"] != iterations:
+            outcome = event["outcome"]
+            reason = event["reason"]
+            if CANDIDATE_REASONS.get(reason) != outcome:
                 raise AutoresearchError(
-                    f"Iteration number must be {iterations}, got {event['iteration']}"
+                    f"Candidate {candidate} reason {reason!r} does not match outcome {outcome!r}"
                 )
-            previous_metric = parse_decimal(
-                event["previous_metric"], field="iteration.previous_metric"
-            )
-            trial_metric = parse_decimal(event["trial_metric"], field="iteration.trial_metric")
+            trial_metric = parse_decimal(
+                event["trial_metric"], field="candidate_resolved.trial_metric"
+            ) if event["trial_metric"] is not None else None
             retained_metric = parse_decimal(
-                event["retained_metric"], field="iteration.retained_metric"
+                event["retained_metric"], field="candidate_resolved.retained_metric"
             )
-            if previous_metric != metric:
-                raise AutoresearchError(
-                    f"Iteration {iterations} previous_metric does not match retained state"
-                )
-            trial_improved = improved(trial_metric, metric, run["metric"]["direction"])
-            if event["outcome"] == "keep":
-                if not trial_improved:
+            if outcome == "admitted":
+                if trial_metric is None:
+                    raise AutoresearchError(f"Candidate {candidate} admitted without a trial metric")
+                if not improved(trial_metric, metric, run["metric"]["direction"]):
                     raise AutoresearchError(
-                        f"Iteration {iterations} keeps a metric that did not improve"
+                        f"Candidate {candidate} admitted a metric that did not improve"
                     )
                 if retained_metric != trial_metric:
                     raise AutoresearchError(
-                        f"Iteration {iterations} keep must retain the trial metric"
+                        f"Candidate {candidate} admitted must retain the trial metric"
                     )
                 if event["guard"] != "pass":
-                    raise AutoresearchError(f"Iteration {iterations} keep requires a passing guard")
-                if event["revert_commit"] is not None or event["head"] != event["trial_commit"]:
+                    raise AutoresearchError(f"Candidate {candidate} admitted requires a passing guard")
+                if event["head"] != event["trial_commit"]:
                     raise AutoresearchError(
-                        f"Iteration {iterations} keep has invalid commit provenance"
+                        f"Candidate {candidate} admitted has invalid commit provenance"
                     )
                 if run["guard"] is None and event["guard_log"] is not None:
                     raise AutoresearchError(
-                        f"Iteration {iterations} has a guard log but no configured guard"
+                        f"Candidate {candidate} has a guard log but no configured guard"
                     )
                 if run["guard"] is not None and event["guard_log"] is None:
                     raise AutoresearchError(
-                        f"Iteration {iterations} is missing its configured guard log"
+                        f"Candidate {candidate} is missing its configured guard log"
                     )
+                metric = retained_metric
+                head = event["head"]
             else:
-                if retained_metric != metric:
+                if retained_metric != metric or event["head"] != head:
                     raise AutoresearchError(
-                        f"Iteration {iterations} discard changed the retained metric"
+                        f"Candidate {candidate} {outcome} moved the frontier"
                     )
-                if event["revert_commit"] is None or event["head"] != event["revert_commit"]:
+                if reason == "guard_failed" and (
+                    run["guard"] is None or event["guard"] != "fail" or event["guard_log"] is None
+                ):
                     raise AutoresearchError(
-                        f"Iteration {iterations} discard must point at its revert commit"
+                        f"Candidate {candidate} recorded guard_failed without a failed guard"
                     )
-                if trial_improved:
-                    if run["guard"] is None or event["guard"] != "fail" or event["guard_log"] is None:
+                if reason == "no_improvement":
+                    if trial_metric is None:
                         raise AutoresearchError(
-                            f"Iteration {iterations} discarded an improvement without a failed guard"
+                            f"Candidate {candidate} no_improvement requires a trial metric"
                         )
-                elif event["guard"] != "not_run" or event["guard_log"] is not None:
-                    raise AutoresearchError(
-                        f"Iteration {iterations} ran a guard for a non-improving trial"
-                    )
-            metric = retained_metric
-            head = event["head"]
+                    if improved(trial_metric, metric, run["metric"]["direction"]):
+                        raise AutoresearchError(
+                            f"Candidate {candidate} discarded an improvement as no_improvement"
+                        )
+                    if event["guard"] != "not_run" or event["guard_log"] is not None:
+                        raise AutoresearchError(
+                            f"Candidate {candidate} ran a guard for a non-improving trial"
+                        )
         elif event_type in TERMINAL_EVENTS:
             event_metric = parse_decimal(event["metric"], field=f"{event_type}.metric")
             if event_metric != metric:
@@ -337,23 +392,28 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
                 run["metric"]["direction"],
             ):
                 raise AutoresearchError("complete event does not satisfy the configured target")
+            if sorted(event["unresolved_candidates"]) != sorted(unresolved):
+                raise AutoresearchError(
+                    f"{event_type} event reports unresolved candidates "
+                    f"{event['unresolved_candidates']}, replay has {sorted(unresolved)}"
+                )
+            unrolled_back_error = False
             if event_type == "error":
                 if event["trial_commit"] is None and event["head"] != head:
                     raise AutoresearchError(
                         "error without a trial commit changed the retained HEAD"
                     )
-                if (
-                    event["trial_commit"] is not None
-                    and event["revert_commit"] is None
-                    and event["head"] != event["trial_commit"]
-                ):
-                    raise AutoresearchError(
-                        "unreverted error HEAD must equal its trial commit"
-                    )
+                if event["trial_commit"] is not None and event["head"] != head:
+                    # Rollback could not be completed, so the branch still carries the trial
+                    # commit. The run is recoverable only by manual Git repair, never by resume.
+                    if event["head"] != event["trial_commit"]:
+                        raise AutoresearchError(
+                            "error that left the trial in place must point at its trial commit"
+                        )
+                    unrolled_back_error = True
             head = event["head"]
             status = event_type
             last_terminal = event_type
-            last_terminal_event = event
         elif event_type == "resumed":
             if parse_decimal(event["metric"], field="resumed.metric") != metric or event["head"] != head:
                 raise AutoresearchError("resumed event does not match retained state")
@@ -373,6 +433,7 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
         head=head,
         iterations=iterations,
         last_event=events[-1],
+        unresolved=tuple(sorted(unresolved)),
     )
 
 

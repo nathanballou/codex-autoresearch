@@ -171,9 +171,12 @@ events = [
 ]
 if events[0]["event"] != "baseline" or events[-1]["event"] != "complete":
     raise SystemExit(f"invalid event boundary: {events}")
-if sum(event["event"] == "iteration" for event in events) != expected:
-    raise SystemExit(f"iteration event count mismatch: {events}")
-if any(event["event"] == "iteration" and event["outcome"] != "keep" for event in events):
+if sum(event["event"] == "candidate_resolved" for event in events) != expected:
+    raise SystemExit(f"resolved candidate count mismatch: {events}")
+if any(
+    event["event"] == "candidate_resolved" and event["outcome"] != "admitted"
+    for event in events
+):
     raise SystemExit(f"demo unexpectedly retained a discard: {events}")
 dirty = subprocess.check_output(
     ["git", "-C", str(repo), "status", "--short"],

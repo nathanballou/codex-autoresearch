@@ -46,6 +46,7 @@ class RunState:
     head: str
     iterations: int
     last_event: dict[str, Any]
+    unresolved: tuple[int, ...]
 
 
 @dataclass(frozen=True)

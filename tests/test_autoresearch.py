@@ -99,16 +99,17 @@ class AutoresearchTest(unittest.TestCase):
                 "set value to target",
             ).stdout
         )
-        self.assertEqual("keep", result["outcome"])
+        self.assertEqual("admitted", result["outcome"])
         self.assertEqual("complete", result["status"])
         status = self.status()
         self.assertEqual(0, status["metric"]["current"])
-        self.assertEqual(3, status["event_count"])
+        self.assertEqual(4, status["event_count"])
         self.assertEqual("0\n", (self.repo / "src" / "value.txt").read_text(encoding="utf-8"))
         self.assertIn("autoresearch: set value to target", self.git("log", "-1", "--format=%s").stdout)
 
-    def test_non_improving_trial_is_reverted_and_recorded(self) -> None:
+    def test_discarded_trial_is_preserved_without_moving_the_frontier(self) -> None:
         self.init()
+        frontier = self.git("rev-parse", "HEAD").stdout.strip()
         self.set_value(4)
         result = json.loads(
             self.cli(
@@ -119,11 +120,12 @@ class AutoresearchTest(unittest.TestCase):
                 "try a larger value",
             ).stdout
         )
-        self.assertEqual("discard", result["outcome"])
+        self.assertEqual("discarded", result["outcome"])
         self.assertEqual(3, result["retained_metric"])
         self.assertEqual("3\n", (self.repo / "src" / "value.txt").read_text(encoding="utf-8"))
-        subjects = self.git("log", "-2", "--format=%s").stdout
-        self.assertIn('Revert "autoresearch: try a larger value"', subjects)
+        self.assertNotIn("Revert", self.git("log", "-5", "--format=%s").stdout)
+        self.assertEqual(frontier, self.git("rev-parse", "HEAD").stdout.strip())
+        self.assertIn("/c0001", self.git("branch", "--list", "autoresearch/*").stdout)
         self.assertEqual([], [line for line in self.git("status", "--short").stdout.splitlines() if "autoresearch-results" not in line])
 
     def test_history_table_and_tsv_render_discard_without_changing_events(self) -> None:
@@ -145,7 +147,7 @@ class AutoresearchTest(unittest.TestCase):
         table = self.cli("history", "--repo", str(self.repo)).stdout
         self.assertIn("Run:", table)
         self.assertIn("Metric: value  3 -> 3", table)
-        self.assertIn("discard", table)
+        self.assertIn("discarded", table)
         self.assertIn("=1+1 try a larger value", table)
 
         tsv = self.cli(
@@ -156,12 +158,12 @@ class AutoresearchTest(unittest.TestCase):
             "tsv",
         ).stdout
         rows = list(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
-        self.assertEqual(["baseline", "discard"], [row["event"] for row in rows])
+        self.assertEqual(["baseline", "discarded"], [row["event"] for row in rows])
         self.assertEqual("4", rows[1]["trial_metric"])
         self.assertEqual("3", rows[1]["retained_metric"])
         self.assertEqual("'=1+1 try a larger value", rows[1]["description"])
         self.assertTrue(rows[1]["trial_commit"])
-        self.assertTrue(rows[1]["revert_commit"])
+        self.assertTrue(rows[1]["trial_branch"])
         self.assertEqual("not_run", rows[1]["guard"])
         self.assertEqual(events_before, events_path.read_bytes())
 
@@ -201,8 +203,8 @@ class AutoresearchTest(unittest.TestCase):
         self.assertIn("Experiment history", report)
         self.assertIn('<svg class="metric-chart"', report)
         self.assertIn('href="logs/0000-baseline-verify.json"', report)
-        self.assertIn('class="event-label discard"', report)
-        self.assertIn('class="event-label keep"', report)
+        self.assertIn('class="event-label discarded"', report)
+        self.assertIn('class="event-label admitted"', report)
         self.assertIn("discard &lt;script&gt;alert(1)&lt;/script&gt;", report)
         self.assertNotIn("<script>alert(1)</script>", report)
         self.assertNotIn("<script", report)
@@ -223,11 +225,11 @@ class AutoresearchTest(unittest.TestCase):
                 "guarded improvement",
             ).stdout
         )
-        self.assertEqual("discard", result["outcome"])
+        self.assertEqual("discarded", result["outcome"])
         self.assertEqual("fail", self.status()["last_event"]["guard"])
         self.assertEqual("3\n", (self.repo / "src" / "value.txt").read_text(encoding="utf-8"))
 
-    def test_metric_command_failure_records_error_and_reverts(self) -> None:
+    def test_metric_command_failure_records_error_and_restores(self) -> None:
         (self.repo / "score.py").write_text(
             "from pathlib import Path\n"
             "value = int(Path('src/value.txt').read_text(encoding='utf-8').strip())\n"
@@ -251,7 +253,11 @@ class AutoresearchTest(unittest.TestCase):
         self.assertIn("Metric command exited 7", completed.stderr)
         status = self.status()
         self.assertEqual("error", status["status"])
-        self.assertIsNotNone(status["last_event"]["revert_commit"])
+        self.assertIsNotNone(status["last_event"]["trial_commit"])
+        self.assertEqual(status["head"], status["last_event"]["head"])
+        self.assertNotEqual(
+            status["last_event"]["trial_commit"], status["last_event"]["head"]
+        )
         self.assertEqual("3\n", (self.repo / "src" / "value.txt").read_text(encoding="utf-8"))
 
     def test_non_utf8_metric_output_is_preserved_in_diagnostic_log(self) -> None:
@@ -433,13 +439,13 @@ class AutoresearchTest(unittest.TestCase):
         )
         events_path = self.repo / "autoresearch-results" / "events.jsonl"
         events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
-        events[1]["trial_metric"] = 9
+        events[2]["trial_metric"] = 9
         events_path.write_text(
             "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
             encoding="utf-8",
         )
         completed = self.cli("status", "--repo", str(self.repo), check=False)
-        self.assertIn("keeps a metric that did not improve", completed.stderr)
+        self.assertIn("admitted a metric that did not improve", completed.stderr)
 
     def test_tampered_terminal_and_baseline_semantics_fail_validation(self) -> None:
         self.init("--guard", "python3 -c 'raise SystemExit(0)'")
@@ -464,6 +470,7 @@ class AutoresearchTest(unittest.TestCase):
                 "reason": "forged completion",
                 "head": events[0]["head"],
                 "metric": 3,
+                "unresolved_candidates": [],
             }
         )
         events_path.write_text(

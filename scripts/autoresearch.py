@@ -35,8 +35,8 @@ from autoresearch_core import (
     require_no_staged_artifacts,
     require_exact_keys,
     require_paths_in_scope,
-    revert_trial,
     run_command,
+    run_git,
     target_reached,
     utc_now,
     working_paths,
@@ -348,6 +348,7 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
                 reason="baseline already satisfies the target",
                 head=head,
                 metric=decimal_json(baseline),
+                unresolved_candidates=[],
             )
             events.append(complete_event)
             status = "complete"
@@ -383,7 +384,7 @@ def append_error(
     reason: str,
     head: str | None = None,
     trial_commit: str | None = None,
-    revert_commit: str | None = None,
+    unresolved_candidates: list[int] | None = None,
     log: Path | None = None,
 ) -> None:
     append_event(
@@ -395,18 +396,46 @@ def append_error(
         head=head or state.head,
         metric=decimal_json(state.metric),
         trial_commit=trial_commit,
-        revert_commit=revert_commit,
+        unresolved_candidates=(
+            list(state.unresolved) if unresolved_candidates is None else unresolved_candidates
+        ),
         log=relative_log_path(paths, log),
     )
 
 
-def safely_revert_after_error(
+def candidate_branch(run: dict[str, Any], candidate: int) -> str:
+    """
+    Build the audit branch name that preserves one candidate's trial commit.
+    Args:
+    run: Validated run configuration supplying the run id.
+    candidate: Monotonic candidate identifier.
+    Return: Branch name of the form autoresearch/<run8>/c<NNNN>.
+    """
+    return f"autoresearch/{run['run_id'][:8]}/c{candidate:04d}"
+
+
+def preserve_and_reset(repo: Path, *, branch: str, trial_commit: str, frontier: str) -> None:
+    """
+    Keep a rejected trial commit reachable, then return the run branch to the frontier.
+    Args:
+    repo: Repository root.
+    branch: Audit branch to create at the trial commit.
+    trial_commit: Commit produced by the rejected candidate.
+    frontier: Commit the run branch must return to.
+    Return: None.
+    """
+    run_git(repo, "branch", "--force", branch, trial_commit)
+    run_git(repo, "reset", "--hard", frontier)
+
+
+def safely_restore_after_error(
     *,
     repo: Path,
     paths: Paths,
     run: dict[str, Any],
     events: list[dict[str, Any]],
     state: RunState,
+    candidate: int,
     trial_commit: str,
     reason: str,
     log: Path | None,
@@ -431,6 +460,7 @@ def safely_revert_after_error(
             ),
             head=trial_commit,
             trial_commit=trial_commit,
+            unresolved_candidates=[candidate],
             log=log,
         )
         return
@@ -444,12 +474,18 @@ def safely_revert_after_error(
             reason=reason + "; automatic rollback was not attempted because commands left changes: " + ", ".join(dirty),
             head=trial_commit,
             trial_commit=trial_commit,
+            unresolved_candidates=[candidate],
             log=log,
         )
         return
     try:
-        revert_commit = revert_trial(repo, trial_commit)
-    except AutoresearchError as revert_error:
+        preserve_and_reset(
+            repo,
+            branch=candidate_branch(run, candidate),
+            trial_commit=trial_commit,
+            frontier=state.head,
+        )
+    except AutoresearchError as restore_error:
         current_head = git_head(repo)
         append_error(
             paths=paths,
@@ -457,11 +493,12 @@ def safely_revert_after_error(
             events=events,
             state=state,
             reason=(
-                f"{reason}; rollback failed: {revert_error}; "
+                f"{reason}; rollback failed: {restore_error}; "
                 f"current HEAD is {current_head}"
             ),
             head=trial_commit,
             trial_commit=trial_commit,
+            unresolved_candidates=[candidate],
             log=log,
         )
         return
@@ -471,18 +508,18 @@ def safely_revert_after_error(
         events=events,
         state=state,
         reason=reason,
-        head=revert_commit,
+        head=state.head,
         trial_commit=trial_commit,
-        revert_commit=revert_commit,
+        unresolved_candidates=[candidate],
         log=log,
     )
 
 
-def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
+def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     paths, run, events, state = load_context(repo)
     if state.status != "active":
-        raise AutoresearchError(f"Cannot finish an iteration while run status is {state.status}")
+        raise AutoresearchError(f"Cannot finish a candidate while run status is {state.status}")
     if git_branch(repo) != run["branch"]:
         raise AutoresearchError(
             f"Run is pinned to branch {run['branch']}, current branch is {git_branch(repo)}"
@@ -497,8 +534,20 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
         raise AutoresearchError("No experiment changes found; make one focused change before finish")
     require_paths_in_scope(changed, run["scope"])
 
+    candidate = state.iterations + 1
+    started = append_event(
+        paths,
+        run,
+        events,
+        event="candidate_started",
+        candidate=candidate,
+        base_commit=state.head,
+        base_metric=decimal_json(state.metric),
+    )
+    events.append(started)
+
     trial_commit = commit_trial(repo, paths=changed, description=args.description)
-    iteration = state.iterations + 1
+    iteration = candidate
     verify_log = next_command_log(paths, iteration, "verify")
     guard_log: Path | None = None
     control_snapshot = control_state_snapshot(paths)
@@ -533,22 +582,23 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
             command_name="Metric command",
             log_path=verify_log,
         )
-        safely_revert_after_error(
+        safely_restore_after_error(
             repo=repo,
             paths=paths,
             run=run,
             events=events,
             state=state,
+            candidate=candidate,
             trial_commit=trial_commit,
             reason=str(exc),
             log=verify_log,
         )
         raise
 
-    outcome = "discard"
+    outcome = "discarded"
+    reason = "no_improvement"
     guard_status = "not_run"
     retained_metric = state.metric
-    revert_commit: str | None = None
     head = trial_commit
     if improved(trial_metric, state.metric, run["metric"]["direction"]):
         if run["guard"]:
@@ -581,12 +631,13 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
                     command_name="Guard command",
                     log_path=guard_log,
                 )
-                safely_revert_after_error(
+                safely_restore_after_error(
                     repo=repo,
                     paths=paths,
                     run=run,
                     events=events,
                     state=state,
+                    candidate=candidate,
                     trial_commit=trial_commit,
                     reason=str(exc),
                     log=guard_log,
@@ -597,12 +648,23 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
             guard_status = "pass"
 
         if guard_status == "pass":
-            outcome = "keep"
+            outcome = "admitted"
+            reason = "improved"
             retained_metric = trial_metric
+        else:
+            reason = "guard_failed"
 
-    if outcome == "discard":
+    trial_branch = candidate_branch(run, candidate)
+    if outcome == "admitted":
+        run_git(repo, "branch", "--force", trial_branch, trial_commit)
+    else:
         try:
-            revert_commit = revert_trial(repo, trial_commit)
+            preserve_and_reset(
+                repo,
+                branch=trial_branch,
+                trial_commit=trial_commit,
+                frontier=state.head,
+            )
         except AutoresearchError as exc:
             current_head = git_head(repo)
             append_error(
@@ -616,25 +678,26 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 head=trial_commit,
                 trial_commit=trial_commit,
+                unresolved_candidates=[candidate],
                 log=guard_log or verify_log,
             )
             raise
-        head = revert_commit
+        head = state.head
 
     event = append_event(
         paths,
         run,
         events,
-        event="iteration",
-        iteration=iteration,
+        event="candidate_resolved",
+        candidate=candidate,
         outcome=outcome,
+        reason=reason,
         description=" ".join(args.description.split()),
-        previous_metric=decimal_json(state.metric),
         trial_metric=decimal_json(trial_metric),
         retained_metric=decimal_json(retained_metric),
         trial_commit=trial_commit,
+        trial_branch=trial_branch,
         head=head,
-        revert_commit=revert_commit,
         guard=guard_status,
         verify_log=relative_log_path(paths, verify_log),
         guard_log=relative_log_path(paths, guard_log),
@@ -652,6 +715,7 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
             reason="retained metric satisfies the target",
             head=head,
             metric=decimal_json(retained_metric),
+            unresolved_candidates=[],
         )
         events.append(complete)
         status = "complete"
@@ -664,13 +728,14 @@ def finish_iteration(args: argparse.Namespace) -> dict[str, Any]:
             reason="configured candidate limit reached",
             head=head,
             metric=decimal_json(retained_metric),
+            unresolved_candidates=[],
         )
         events.append(stopped)
         status = "stopped"
 
     return {
         "status": status,
-        "iteration": iteration,
+        "candidate": candidate,
         "outcome": outcome,
         "trial_metric": decimal_json(trial_metric),
         "retained_metric": decimal_json(retained_metric),
@@ -697,6 +762,7 @@ def block_run(args: argparse.Namespace) -> dict[str, Any]:
         reason=reason,
         head=state.head,
         metric=decimal_json(state.metric),
+        unresolved_candidates=list(state.unresolved),
     )
     return {"status": "blocked", "reason": event["reason"]}
 
@@ -812,7 +878,7 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     if (
         state.status == "error"
         and state.last_event.get("trial_commit") is not None
-        and state.last_event.get("revert_commit") is None
+        and state.last_event.get("head") == state.last_event.get("trial_commit")
     ):
         raise AutoresearchError(
             "The failed trial commit was not rolled back. Inspect the recorded command log and Git state, "
@@ -867,7 +933,7 @@ def main() -> int:
     if args.command == "init":
         output = initialize_run(args)
     elif args.command == "finish":
-        output = finish_iteration(args)
+        output = finish_candidate(args)
     elif args.command == "block":
         output = block_run(args)
     elif args.command == "status":

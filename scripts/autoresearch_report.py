@@ -26,7 +26,7 @@ class HistoryRow:
     retained_metric: str
     description: str
     trial_commit: str
-    revert_commit: str
+    trial_branch: str
     head: str
     verify_log: str
     guard: str
@@ -57,8 +57,18 @@ def _metric(value: Any) -> str:
 
 
 def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
+    """
+    Project validated events into displayable rows.
+    Args:
+    events: Full validated event list for one run.
+    Return: One row per baseline, resolved candidate, and control event, plus a
+    trailing row for every candidate that started but never resolved.
+    """
     rows: list[HistoryRow] = []
     iteration = 0
+    # candidate id -> (base metric, start event), consumed when the candidate resolves so
+    # whatever remains at the end is exactly the set of candidates still in flight.
+    pending: dict[int, tuple[str, dict[str, Any]]] = {}
     for event in events:
         event_type = event["event"]
         if event_type == "baseline":
@@ -72,7 +82,7 @@ def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
                     retained_metric=_metric(event["metric"]),
                     description="Initial measurement",
                     trial_commit="",
-                    revert_commit="",
+                    trial_branch="",
                     head=_single_line(event["head"]),
                     verify_log=_single_line(event["verify_log"]),
                     guard="",
@@ -81,19 +91,23 @@ def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
                 )
             )
             continue
-        if event_type == "iteration":
-            iteration = event["iteration"]
+        if event_type == "candidate_started":
+            pending[event["candidate"]] = (_metric(event["base_metric"]), event)
+            continue
+        if event_type == "candidate_resolved":
+            iteration = event["candidate"]
+            base_metric, _ = pending.pop(iteration, ("", {}))
             rows.append(
                 HistoryRow(
                     seq=event["seq"],
                     iteration=iteration,
                     event=event["outcome"],
-                    previous_metric=_metric(event["previous_metric"]),
+                    previous_metric=base_metric,
                     trial_metric=_metric(event["trial_metric"]),
                     retained_metric=_metric(event["retained_metric"]),
                     description=_single_line(event["description"]),
                     trial_commit=_single_line(event["trial_commit"]),
-                    revert_commit=_single_line(event["revert_commit"]),
+                    trial_branch=_single_line(event["trial_branch"]),
                     head=_single_line(event["head"]),
                     verify_log=_single_line(event["verify_log"]),
                     guard=_single_line(event["guard"]),
@@ -113,12 +127,32 @@ def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
                 retained_metric=_metric(event.get("metric")),
                 description=_single_line(description),
                 trial_commit=_single_line(event.get("trial_commit")),
-                revert_commit=_single_line(event.get("revert_commit")),
+                trial_branch="",
                 head=_single_line(event.get("head")),
                 verify_log=_single_line(event.get("log")),
                 guard="",
                 guard_log="",
                 time=_single_line(event["time"]),
+            )
+        )
+    for candidate in sorted(pending):
+        base_metric, start = pending[candidate]
+        rows.append(
+            HistoryRow(
+                seq=start["seq"],
+                iteration=candidate,
+                event="unresolved",
+                previous_metric=base_metric,
+                trial_metric="",
+                retained_metric="",
+                description="Started but never resolved",
+                trial_commit="",
+                trial_branch="",
+                head=_single_line(start["base_commit"]),
+                verify_log="",
+                guard="",
+                guard_log="",
+                time=_single_line(start["time"]),
             )
         )
     return rows
@@ -208,7 +242,7 @@ TSV_FIELDS = (
     "retained_metric",
     "description",
     "trial_commit",
-    "revert_commit",
+    "trial_branch",
     "head",
     "verify_log",
     "guard",
@@ -270,9 +304,9 @@ def _metric_chart(run: dict[str, Any], events: list[dict[str, Any]]) -> str:
     retained: list[tuple[int, Decimal]] = [(0, baseline)]
     trials: list[tuple[int, Decimal, str]] = []
     for event in events:
-        if event["event"] != "iteration":
+        if event["event"] != "candidate_resolved":
             continue
-        index = event["iteration"]
+        index = event["candidate"]
         retained.append(
             (index, parse_decimal(event["retained_metric"], field="retained metric"))
         )
@@ -357,8 +391,8 @@ def _metric_chart(run: dict[str, Any], events: list[dict[str, Any]]) -> str:
   <text class="axis-label" x="{last_x}" y="{coordinate(top + plot_height + Decimal(26))}" text-anchor="end">{max_iteration}</text>
   <g class="legend" transform="translate(650 252)">
     <line class="retained-line" x1="0" y1="0" x2="24" y2="0" /><text x="32" y="4">Retained</text>
-    <circle class="trial-point keep" cx="122" cy="0" r="5" /><text x="134" y="4">Keep</text>
-    <circle class="trial-point discard" cx="200" cy="0" r="5" /><text x="212" y="4">Discard</text>
+    <circle class="trial-point admitted" cx="122" cy="0" r="5" /><text x="134" y="4">Admitted</text>
+    <circle class="trial-point discarded" cx="212" cy="0" r="5" /><text x="224" y="4">Discarded</text>
   </g>
 </svg>""".strip()
 
@@ -376,8 +410,8 @@ def render_html_report(
     )
     known_events = {
         "baseline",
-        "keep",
-        "discard",
+        "admitted",
+        "discarded",
         "complete",
         "blocked",
         "error",
@@ -393,11 +427,11 @@ def render_html_report(
                 f'<code title="{_escape(row.trial_commit)}">'
                 f"{_escape(_short_hash(row.trial_commit))}</code>"
             )
-        if row.revert_commit:
+        if row.trial_branch:
             commits.append(
-                '<span class="commit-separator">revert</span> '
-                f'<code title="{_escape(row.revert_commit)}">'
-                f"{_escape(_short_hash(row.revert_commit))}</code>"
+                '<span class="commit-separator">branch</span> '
+                f'<code title="{_escape(row.trial_branch)}">'
+                f"{_escape(_short_hash(row.trial_branch))}</code>"
             )
         logs = [_safe_log_link(row.verify_log, "verify")]
         if row.guard_log:
