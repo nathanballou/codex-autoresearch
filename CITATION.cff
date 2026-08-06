@@ -5,8 +5,8 @@ title: "Autoresearch: Autonomous Goal-Driven Experimentation for Codex"
 authors:
   - family-names: "Li"
     given-names: "Linxiao"
-repository-code: "https://github.com/leo-lilinxiao/autoresearch"
-url: "https://github.com/leo-lilinxiao/autoresearch"
+repository-code: "https://github.com/leo-lilinxiao/codex-autoresearch"
+url: "https://github.com/leo-lilinxiao/codex-autoresearch"
 license: "MIT"
 keywords:
   - codex

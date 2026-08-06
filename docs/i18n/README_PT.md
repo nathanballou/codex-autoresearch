@@ -13,7 +13,7 @@ Diga ao Codex qual meta numérica deseja alcançar. Ele inspeciona o repositóri
 Instale no Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Abra um repositório Git limpo com Full Access:

@@ -13,7 +13,7 @@ Codex のための、自律的で測定可能な実験ループです。
 Codex でインストールします。
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 クリーンな Git リポジトリを Full Access で開くことを推奨します。

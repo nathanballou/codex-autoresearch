@@ -13,7 +13,7 @@ Sirve para fallos de pruebas, cobertura, errores de tipos, avisos, latencia, tam
 Instala desde Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Abre un repositorio Git limpio con Full Access:

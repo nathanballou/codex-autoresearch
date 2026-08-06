@@ -149,7 +149,7 @@ If the previous session died mid-flight, `reconcile` reports what it left behind
 In Codex, run:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Then open the target repository and invoke `$autoresearch`.
@@ -159,7 +159,7 @@ Then open the target repository and invoke `$autoresearch`.
 Use this when the skill should travel with one project:
 
 ```bash
-git clone https://github.com/leo-lilinxiao/autoresearch.git
+git clone https://github.com/leo-lilinxiao/codex-autoresearch.git
 mkdir -p your-project/.agents/skills
 cp -R autoresearch your-project/.agents/skills/autoresearch
 ```
@@ -169,7 +169,7 @@ cp -R autoresearch your-project/.agents/skills/autoresearch
 Use this for all projects owned by the current user:
 
 ```bash
-git clone https://github.com/leo-lilinxiao/autoresearch.git
+git clone https://github.com/leo-lilinxiao/codex-autoresearch.git
 mkdir -p ~/.agents/skills
 cp -R autoresearch ~/.agents/skills/autoresearch
 ```
@@ -179,7 +179,7 @@ Do not install both a repository copy and a user copy unless you intentionally w
 ## Development Symlink
 
 ```bash
-git clone https://github.com/leo-lilinxiao/autoresearch.git
+git clone https://github.com/leo-lilinxiao/codex-autoresearch.git
 mkdir -p your-project/.agents/skills
 ln -s "$(pwd)/autoresearch" your-project/.agents/skills/autoresearch
 ```

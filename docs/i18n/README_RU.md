@@ -13,7 +13,7 @@
 Установите в Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Рекомендуется открыть чистый Git-репозиторий с Full Access:

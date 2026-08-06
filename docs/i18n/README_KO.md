@@ -13,7 +13,7 @@ Codex를 위한 자율적이고 측정 가능한 실험 루프입니다.
 Codex에서 설치합니다.
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 깨끗한 Git 저장소를 Full Access로 여는 것을 권장합니다.

@@ -13,7 +13,7 @@ Convient aux tests en échec, à la couverture, aux erreurs de type, aux avertis
 Installez depuis Codex :
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Ouvrez de préférence un dépôt Git propre avec Full Access :

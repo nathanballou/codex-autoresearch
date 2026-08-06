@@ -13,7 +13,7 @@
 在 Codex 中安装：
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 建议用 Full Access 打开一个干净的 Git 仓库：

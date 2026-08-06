@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://developers.openai.com/codex/skills"><img src="https://img.shields.io/badge/Codex-Skill-blue?logo=openai&logoColor=white" alt="Codex Skill"></a>
-  <a href="https://github.com/leo-lilinxiao/autoresearch"><img src="https://img.shields.io/github/stars/leo-lilinxiao/autoresearch?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/leo-lilinxiao/codex-autoresearch"><img src="https://img.shields.io/github/stars/leo-lilinxiao/codex-autoresearch?style=social" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License"></a>
 </p>
 
@@ -37,7 +37,7 @@ Autoresearch works for test failures, coverage, type errors, warnings, latency, 
 Install from Codex:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Open a clean Git repository with Full Access:
@@ -237,7 +237,7 @@ Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch),
   title = {Autoresearch: Autonomous Goal-Driven Experimentation for Codex},
   year = {2026},
   publisher = {GitHub},
-  url = {https://github.com/leo-lilinxiao/autoresearch}
+  url = {https://github.com/leo-lilinxiao/codex-autoresearch}
 }
 ```
 
@@ -247,9 +247,9 @@ GitHub also reads [CITATION.cff](CITATION.cff) for its **Cite this repository** 
 
 <a href="https://www.star-history.com/?repos=leo-lilinxiao%2Fautoresearch&type=timeline&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/autoresearch&type=timeline&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/autoresearch&type=timeline&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=leo-lilinxiao/autoresearch&type=timeline&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/codex-autoresearch&type=timeline&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=leo-lilinxiao/codex-autoresearch&type=timeline&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=leo-lilinxiao/codex-autoresearch&type=timeline&legend=top-left" />
  </picture>
 </a>
 

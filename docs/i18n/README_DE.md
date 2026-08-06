@@ -13,7 +13,7 @@ Geeignet für fehlgeschlagene Tests, Coverage, Typfehler, Warnungen, Latenz, Bin
 In Codex installieren:
 
 ```text
-$skill-installer install https://github.com/leo-lilinxiao/autoresearch
+$skill-installer install https://github.com/leo-lilinxiao/codex-autoresearch
 ```
 
 Ein sauberes Git-Repository mit Full Access öffnen:
