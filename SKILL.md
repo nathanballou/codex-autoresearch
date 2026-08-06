@@ -1,6 +1,6 @@
 ---
 name: autoresearch
-description: "Run autonomous, measurable experiments in a Git repository: change one hypothesis, verify a numeric metric, keep improvements, and revert failures. Use when the user wants Codex to keep iterating toward a numeric target in the foreground. Do not use for ordinary one-shot coding, open-ended work without a mechanical metric, or non-Git directories."
+description: "Run autonomous, measurable experiments in a Git repository: change one hypothesis, verify a numeric metric, keep improvements, and revert failures. Use when the user wants an agent to keep iterating toward a numeric target. Do not use for ordinary one-shot coding, open-ended work without a mechanical metric, or non-Git directories."
 metadata:
   short-description: "Run measurable autonomous experiments"
 ---
@@ -11,7 +11,7 @@ Turn a repo-level goal into a controlled loop:
 
 `inspect -> change one thing -> verify -> keep or revert -> repeat`
 
-Codex supplies the engineering judgment. The bundled control script supplies strict Git boundaries, measurement, rollback, state, and logs.
+The coordinating model supplies the engineering judgment. The bundled control script supplies strict Git boundaries, measurement, rollback, state, and logs.
 
 ## Load
 
@@ -62,9 +62,13 @@ Every parallelism value is explicit; nothing is defaulted. Run `compute detect` 
 and write `autoresearch/compute.json` from what it reports. `autoresearch/goal.md`
 must exist and state the overarching goal.
 
-Then call `get_goal`. Reuse a matching unfinished Goal, otherwise call `create_goal`. The Goal objective must identify this as autoresearch, include the returned run id, metric and target, and say to continue the validated experiment loop until terminal status. If a different unfinished Goal exists, stop and explain the conflict. Official Codex Goal continuation owns foreground persistence; this skill does not install hooks or modify Codex configuration.
+Then establish continuity with whatever your host provides, so the run survives across
+turns. `references/parallel.md` names the mechanism per host. Whatever it is, it must
+identify this as autoresearch and carry the returned run id, metric, and target.
 
-If Goal tools are unavailable, do not claim the foreground run can continue autonomously across turns. Explain that the installed Codex does not expose the required Goal capability.
+If your host has no continuation mechanism, say so plainly rather than implying the
+run will continue on its own. The run itself is never lost: all state lives in
+`autoresearch-results/`, so any later session on any host resumes it with `status`.
 
 ## Experiment Loop
 
@@ -99,7 +103,9 @@ discarded candidate keeps its commit on its own branch and leaves the frontier a
 Without `--candidate` the run degrades to one sequential candidate in the primary
 checkout, for hosts that cannot spawn concurrent subagents.
 
-Continue immediately while status is `active`. On `complete`, verify status, call `update_goal(status="complete")`, and summarize the baseline, final metric, iterations, and retained commits.
+Continue immediately while status is `active`. On `complete`, verify status, close out
+your host's continuation, and summarize the baseline, final metric, candidate count,
+and retained commits.
 
 Use `block` only when progress truly requires external input or an environment change, and only after the same blocker has prevented progress on three consecutive Goal turns:
 
@@ -107,14 +113,14 @@ Use `block` only when progress truly requires external input or an environment c
 python3 <skill-root>/scripts/autoresearch.py block --repo <repo> --reason <reason>
 ```
 
-Then call `update_goal(status="blocked")`. A failed hypothesis, difficult bug, or lack of immediate improvement is not a blocker.
+Then mark your host's continuation blocked. A failed hypothesis, difficult bug, or lack of immediate improvement is not a blocker.
 
 ## Existing Runs
 
 - History request: run `history --repo <repo>`; use `--format tsv` only for tabular export.
 - HTML report request: run `report --repo <repo>` and return its generated path. Both views validate the complete event history; neither is runtime state.
 - Same foreground goal: validate `status`, resume the matching official Goal, and continue.
-- Different goal: show the current run. Ask the user to clear its official Goal with `/goal clear`. Then ask before `archive` and initialize the fresh run.
+- Different goal: show the current run. Ask the user to clear the previous continuation on their host. Then ask before `archive` and initialize the fresh run.
 - `complete`: never resume it. Archive before a new goal.
 - Invalid JSON, unknown schema, event gap, Git mismatch, out-of-scope change, or malformed metric output: stop and report the exact error and log path. Never reconstruct, guess, or silently repair state.
 - A failed initialization may leave `init-error.json` and command logs but no `run.json`. Report the diagnostic and use explicit `archive` before retrying; do not treat it as a fresh run.

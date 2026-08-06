@@ -28,6 +28,17 @@ releases — use whatever your own tool list exposes.
 | notice a worker finished | subagent completion | task completion notification |
 | read-only helper | native, read-only | the read-only explore agent type |
 | continuity across turns | an official Goal | the conversation, plus task tracking |
+| concurrency ceiling | `max_concurrent_threads_per_session` in `config.toml` | measured at 16; declare it in the bank |
+
+Sixteen concurrent Claude Code subagents were measured working: all sixteen held a
+60-second task at once, none rejected. Dispatch ramps at roughly 2 seconds per start,
+so the last of sixteen begins about 31 seconds after the first. Candidates run for
+minutes, so that ramp does not matter, but do not expect an instant fleet.
+
+Spawn each worker with the `model` and `thinking_tokens` its packet was assigned.
+`claim` rates every candidate: deepening a win is close to mechanical and goes cheap,
+a new mechanism gets the standard budget, and a plateau escape or a discard streak gets
+the largest, which is where the reasoning is actually hard.
 
 If your host cannot spawn concurrent subagents, run `claim --count 1` in a loop. The
 state model is identical; only the concurrency is lost.

@@ -65,6 +65,85 @@ Full Access is recommended because autoresearch creates and reverts Git commits:
 codex --dangerously-bypass-approvals-and-sandbox
 ```
 
+## Claude Code
+
+The skill is host-neutral. Claude Code reads the same `SKILL.md`, runs the same control
+script, and shares the same run state, so a run started in Codex continues in Claude
+Code and back again.
+
+Install for one project:
+
+```bash
+mkdir -p .claude/skills
+cp -R /path/to/autoresearch .claude/skills/autoresearch
+```
+
+Or for every project:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -R /path/to/autoresearch ~/.claude/skills/autoresearch
+```
+
+Invoke it by name, or let Claude select it from the description.
+
+### Concurrency
+
+Measured on this machine: **16 concurrent subagents run successfully.** Sixteen were
+dispatched at once, all sixteen held a 60-second task simultaneously, and none were
+rejected or queued.
+
+Dispatch is ramped rather than instantaneous: starts are roughly 2 seconds apart, so
+all sixteen are running about 31 seconds after the first. That matters only for very
+short candidates. Autoresearch candidates run for minutes, so the ramp is noise.
+
+Declare that pool as an `agents` bank entry, where capacity is a subagent count rather
+than a core count:
+
+```json
+{
+  "cores_per_candidate": 1,
+  "measurement": "parallel",
+  "bank": [
+    {
+      "id": "claude-subagents",
+      "kind": "agents",
+      "slots": 16,
+      "label": "Claude Code subagent pool"
+    }
+  ],
+  "workers": {
+    "simple": { "model": "haiku", "thinking_tokens": 4000 },
+    "standard": { "model": "sonnet", "thinking_tokens": 16000 },
+    "complex": { "model": "sonnet", "thinking_tokens": 32000 }
+  }
+}
+```
+
+`claim` assigns each candidate a tier and returns its `model` and `thinking_tokens`.
+Pass them through when you spawn the subagent. Deepening a result that just paid off is
+close to mechanical and gets the cheap tier; escaping a plateau gets the largest budget,
+because that is where the hard reasoning actually is.
+
+Re-measure before trusting 16 on a different machine or plan. The number belongs in the
+bank precisely so it is a declared fact you can change, not an assumption in the code.
+
+### Continuing a run from another chat
+
+Run state lives in `autoresearch-results/` inside the repository, not in any chat. Any
+session on either host picks up an existing run:
+
+```bash
+python3 <skill-root>/scripts/autoresearch.py status --repo <repo>
+```
+
+Whatever the previous session was, `status` replays the event log and reports the exact
+frontier, the live slots, and any expired leases. There is no shared service to
+configure and nothing to export: the repository is the backend.
+
+If the previous session died mid-flight, `reconcile` reports what it left behind and
+`reap` clears it.
+
 ## Skill Installer
 
 In Codex, run:
