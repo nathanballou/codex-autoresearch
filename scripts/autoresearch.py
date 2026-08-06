@@ -44,7 +44,7 @@ from autoresearch_core import (
     write_json_atomic,
     write_text_atomic,
 )
-from autoresearch_allocator import choose_role
+from autoresearch_allocator import choose_role, choose_tier
 from autoresearch_bank import (
     allocate_grant,
     grant_environment,
@@ -712,6 +712,7 @@ def measure_in(
     log_path: Path,
     label: str,
     grant: dict[str, Any],
+    frontier_is_pinned: bool,
 ) -> Any:
     """
     Run the verify command inside one worktree and parse its metric.
@@ -724,10 +725,14 @@ def measure_in(
     log_path: Where to record command output.
     label: Human label used in error messages.
     grant: Compute grant exported to the command environment.
+    frontier_is_pinned: True only while holding the admission lock, when no other
+    candidate can move the primary HEAD.
     Return: The parsed metric.
 
-    The command must leave both the worktree and the primary checkout untouched. A
-    verify command that wanders into the primary repository is an error, not a surprise.
+    The command must leave the worktree untouched and must not dirty the primary
+    checkout. The primary HEAD is only compared when the admission lock is held: outside
+    it, a concurrent candidate admitting is a legitimate reason for HEAD to move, and
+    treating that as this command's doing would fail candidates at random.
     """
     primary_head = git_head(paths.repo)
     control_snapshot = control_state_snapshot(paths)
@@ -748,7 +753,13 @@ def measure_in(
         command_name=label,
         log_path=log_path,
     )
-    if git_head(paths.repo) != primary_head:
+    primary_dirty = working_paths(paths.repo)
+    if primary_dirty:
+        raise AutoresearchError(
+            f"{label} left changes in the primary checkout: {', '.join(primary_dirty)}. "
+            f"Full output: {log_path}"
+        )
+    if frontier_is_pinned and git_head(paths.repo) != primary_head:
         raise AutoresearchError(
             f"{label} moved the primary repository from {primary_head} to "
             f"{git_head(paths.repo)}. Full output: {log_path}"
@@ -813,6 +824,7 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
         log_path=verify_log,
         label="Metric command",
         grant=grant,
+        frontier_is_pinned=False,
     )
 
     def resolve(outcome: str, reason: str, *, metric: Any, head: str, guard: str,
@@ -911,6 +923,7 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
                 log_path=rebase_log,
                 label="Rebase metric command",
                 grant=grant,
+                frontier_is_pinned=True,
             )
             if not improved(measured, frontier_metric, run["metric"]["direction"]):
                 resolve(
@@ -1551,6 +1564,13 @@ def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
             )
         # events already grew for each candidate claimed in this loop, so the highest
         # started id is authoritative on its own. Adding len(packets) double-counts.
+        tier, tier_reason = choose_tier(
+            events=events,
+            role=role,
+            role_source=role_source,
+            escalate_after=allocation["plateau_k"],
+        )
+        profile = bank["workers"][tier]
         candidate = max([0, *candidate_roles(events)]) + 1
         branch = candidate_branch(run, candidate)
         slot["state"] = "preparing"
@@ -1600,6 +1620,10 @@ def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
                 "role": role,
                 "role_source": role_source,
                 "role_reason": args.role_reason,
+                "tier": tier,
+                "tier_reason": tier_reason,
+                "model": profile["model"],
+                "thinking_tokens": profile["thinking_tokens"],
                 "grant": grant,
                 "worktree": slot["worktree"],
                 "branch": branch,
@@ -1616,6 +1640,8 @@ def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
                     decisions_text=decisions_text,
                     base_metric=str(decimal_json(state.metric)),
                     window=allocation["window"],
+                    tier=tier,
+                    profile=profile,
                 ),
             }
         )
@@ -1627,7 +1653,8 @@ def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
         "candidates": packets,
         "instruction": (
             "Spawn one subagent per packet using your host's concurrent subagent "
-            "primitive, then record each agent id with bind."
+            "primitive, honoring each candidate's model and thinking_tokens, then "
+            "record each agent id with bind."
         ),
     }
 

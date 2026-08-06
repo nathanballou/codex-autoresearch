@@ -106,3 +106,65 @@ def choose_role(
         chosen = "exploit" if live.get("exploit", 0) < live.get("explore", 0) else "explore"
         return chosen, "policy_tiebreak"
     return "exploit", "policy_tiebreak"
+
+
+def trailing_discards(events: list[dict[str, Any]]) -> int:
+    """
+    Count judged candidates since the last admission.
+    Args:
+    events: Full validated event list.
+    Return: How many judged candidates in a row failed to move the frontier.
+    """
+    streak = 0
+    for event in reversed(events):
+        if event["event"] != "candidate_resolved":
+            continue
+        if event["outcome"] == "admitted":
+            break
+        if event["outcome"] == "discarded":
+            streak += 1
+    return streak
+
+
+def last_outcome(events: list[dict[str, Any]]) -> str | None:
+    """
+    Find how the most recent judged candidate ended.
+    Args:
+    events: Full validated event list.
+    Return: The outcome, or None before the first judged candidate.
+    """
+    for event in reversed(events):
+        if event["event"] == "candidate_resolved" and event["outcome"] in JUDGED_OUTCOMES:
+            return event["outcome"]
+    return None
+
+
+def choose_tier(
+    *,
+    events: list[dict[str, Any]],
+    role: str,
+    role_source: str,
+    escalate_after: int,
+) -> tuple[str, str]:
+    """
+    Pick how much model capability and thinking one candidate deserves.
+    Args:
+    events: Full validated event list.
+    role: The role this candidate was assigned.
+    role_source: How the role was chosen, so a plateau escape can be recognized.
+    escalate_after: Consecutive discards that force the most capable tier.
+    Return: The tier name and the reason it was chosen.
+
+    Cheap work should be cheap. Deepening a direction that just paid off is close to
+    mechanical; escaping a plateau is the hardest reasoning in the loop and is where
+    the budget belongs.
+    """
+    if role_source == "plateau_escape":
+        return "complex", "plateau_escape"
+    if trailing_discards(events) >= escalate_after:
+        return "complex", "discard_streak"
+    if role == "explore":
+        return "standard", "new_mechanism"
+    if last_outcome(events) == "admitted":
+        return "simple", "deepening_a_win"
+    return "standard", "default"

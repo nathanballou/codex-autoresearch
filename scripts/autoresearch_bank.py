@@ -15,9 +15,12 @@ from autoresearch_core import (
 )
 
 COMPUTE_FILE = "compute.json"
-BANK_KEYS = {"cores_per_candidate", "measurement", "bank"}
+BANK_KEYS = {"cores_per_candidate", "measurement", "bank", "workers"}
 CORES_ENTRY_KEYS = {"id", "kind", "cores", "label"}
 NODE_ENTRY_KEYS = {"id", "kind", "capacity", "label"}
+AGENTS_ENTRY_KEYS = {"id", "kind", "slots", "label"}
+WORKER_TIERS = ("simple", "standard", "complex")
+TIER_KEYS = {"model", "thinking_tokens"}
 MEASUREMENT_MODES = {"parallel", "exclusive"}
 
 
@@ -81,6 +84,14 @@ def load_bank(repo: Path) -> dict[str, Any]:
                 or entry["cores"] <= 0
             ):
                 raise AutoresearchError(f"{source}.cores must be a positive integer")
+        elif kind == "agents":
+            require_exact_keys(entry, required=AGENTS_ENTRY_KEYS, source=source)
+            if (
+                not isinstance(entry["slots"], int)
+                or isinstance(entry["slots"], bool)
+                or entry["slots"] <= 0
+            ):
+                raise AutoresearchError(f"{source}.slots must be a positive integer")
         elif kind == "node":
             require_exact_keys(entry, required=NODE_ENTRY_KEYS, source=source)
             if (
@@ -90,13 +101,35 @@ def load_bank(repo: Path) -> dict[str, Any]:
             ):
                 raise AutoresearchError(f"{source}.capacity must be a positive integer")
         else:
-            raise AutoresearchError(f"{source}.kind must be cores or node, got {kind!r}")
+            raise AutoresearchError(
+                f"{source}.kind must be cores, agents, or node, got {kind!r}"
+            )
         for key in ("id", "label"):
             if not isinstance(entry[key], str) or not entry[key].strip():
                 raise AutoresearchError(f"{source}.{key} must be a non-empty string")
         if entry["id"] in seen:
             raise AutoresearchError(f"{source}.id duplicates an earlier entry: {entry['id']}")
         seen.add(entry["id"])
+
+    workers = payload["workers"]
+    if not isinstance(workers, dict):
+        raise AutoresearchError(f"{path}.workers must be an object")
+    require_exact_keys(workers, required=set(WORKER_TIERS), source=f"{path}.workers")
+    for tier in WORKER_TIERS:
+        entry = workers[tier]
+        if not isinstance(entry, dict):
+            raise AutoresearchError(f"{path}.workers.{tier} must be an object")
+        require_exact_keys(entry, required=TIER_KEYS, source=f"{path}.workers.{tier}")
+        if not isinstance(entry["model"], str) or not entry["model"].strip():
+            raise AutoresearchError(f"{path}.workers.{tier}.model must be a non-empty string")
+        if (
+            not isinstance(entry["thinking_tokens"], int)
+            or isinstance(entry["thinking_tokens"], bool)
+            or entry["thinking_tokens"] < 0
+        ):
+            raise AutoresearchError(
+                f"{path}.workers.{tier}.thinking_tokens must be a non-negative integer"
+            )
     return payload
 
 
@@ -110,6 +143,8 @@ def entry_capacity(entry: dict[str, Any], cores_per_candidate: int) -> int:
     """
     if entry["kind"] == "cores":
         return entry["cores"] // cores_per_candidate
+    if entry["kind"] == "agents":
+        return entry["slots"]
     return entry["capacity"]
 
 
@@ -146,6 +181,15 @@ def allocate_grant(bank: dict[str, Any], held: list[dict[str, Any]]) -> dict[str
                 "source_id": entry["id"],
                 "kind": "cores",
                 "cores": per_candidate,
+                "label": entry["label"],
+            }
+        if entry["kind"] == "agents":
+            # A subagent slot, not CPU. The limiting resource on a host like Claude Code
+            # is how many workers may run at once, which cores cannot express.
+            return {
+                "source_id": entry["id"],
+                "kind": "agents",
+                "cores": None,
                 "label": entry["label"],
             }
         return {

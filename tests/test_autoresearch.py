@@ -43,6 +43,11 @@ class AutoresearchTest(unittest.TestCase):
                     "bank": [
                         {"id": "local", "kind": "cores", "cores": 3, "label": "test host"}
                     ],
+                    "workers": {
+                        "simple": {"model": "haiku", "thinking_tokens": 1},
+                        "standard": {"model": "sonnet", "thinking_tokens": 2},
+                        "complex": {"model": "sonnet", "thinking_tokens": 3},
+                    },
                 }
             ),
             encoding="utf-8",

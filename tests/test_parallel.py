@@ -38,6 +38,11 @@ class ParallelTest(unittest.TestCase):
                     "cores_per_candidate": 1,
                     "measurement": "parallel",
                     "bank": [{"id": "local", "kind": "cores", "cores": 3, "label": "test"}],
+                    "workers": {
+                        "simple": {"model": "haiku", "thinking_tokens": 1},
+                        "standard": {"model": "sonnet", "thinking_tokens": 2},
+                        "complex": {"model": "sonnet", "thinking_tokens": 3},
+                    },
                 }
             ),
             encoding="utf-8",

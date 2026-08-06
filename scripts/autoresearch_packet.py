@@ -77,6 +77,8 @@ def build_packet(
     decisions_text: str,
     base_metric: str,
     window: int,
+    tier: str,
+    profile: dict[str, Any],
 ) -> str:
     """
     Render the complete instruction text for one candidate worker.
@@ -92,6 +94,8 @@ def build_packet(
     decisions_text: Accumulated curated decisions.
     base_metric: Frontier metric this candidate must beat.
     window: How many recent hypotheses to show.
+    tier: Difficulty tier this candidate was assigned.
+    profile: Model and thinking budget for that tier.
     Return: The worker packet.
 
     Generating this in code is what makes the worker contract mechanical. The
@@ -139,6 +143,12 @@ Verify command: {metric["command"]}
 
 Recently tried, do not repeat:
 {history_block}
+
+## Effort
+
+This candidate is rated **{tier}**: model `{profile["model"]}`, thinking budget
+{profile["thinking_tokens"]} tokens. Spend that budget on the hypothesis, not on
+re-reading context you already have here.
 
 ## Your workspace and compute
 

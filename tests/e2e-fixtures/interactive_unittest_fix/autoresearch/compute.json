@@ -2,6 +2,25 @@
   "cores_per_candidate": 1,
   "measurement": "parallel",
   "bank": [
-    { "id": "local", "kind": "cores", "cores": 2, "label": "ci runner" }
-  ]
+    {
+      "id": "local",
+      "kind": "cores",
+      "cores": 2,
+      "label": "ci runner"
+    }
+  ],
+  "workers": {
+    "simple": {
+      "model": "haiku",
+      "thinking_tokens": 4000
+    },
+    "standard": {
+      "model": "sonnet",
+      "thinking_tokens": 16000
+    },
+    "complex": {
+      "model": "sonnet",
+      "thinking_tokens": 32000
+    }
+  }
 }
