@@ -144,6 +144,154 @@ configure and nothing to export: the repository is the backend.
 If the previous session died mid-flight, `reconcile` reports what it left behind and
 `reap` clears it.
 
+## Prime Agent
+
+Prime Agent reads the same `SKILL.md`, runs the same control script, and shares the same
+run state, so a run started in Codex or Claude Code continues here and back again. What
+differs is the host adapter: workers are RLM child sessions, and the loop is driven by
+Prime Agent's own continuation machinery rather than by a chat turn.
+
+Install for one project:
+
+```bash
+mkdir -p .prime/agent/skills
+cp -R /path/to/autoresearch .prime/agent/skills/autoresearch
+```
+
+Or for every project:
+
+```bash
+mkdir -p ~/.prime/agent/skills
+cp -R /path/to/autoresearch ~/.prime/agent/skills/autoresearch
+```
+
+Prime Agent also scans `~/.agents/skills/` and `.agents/skills/`, so a Manual User or
+Manual Repository install below is already discoverable and needs no second copy. Install
+one or the other: a duplicate name warns and the first copy found wins.
+
+The directory must be named `autoresearch` to match the skill's frontmatter. Run
+`/reload` to pick up a new skill without restarting, and invoke it by name or with
+`/skill:autoresearch`.
+
+### Concurrency
+
+Workers are RLM children spawned from the IPython kernel, one call per claimed packet:
+
+```python
+handle = await rlm(packet, name="c0007")
+```
+
+The call admits the child and returns immediately; it never returns the child's answer.
+That costs nothing here, because an autoresearch worker calls `finish` itself and the
+coordinator reads the outcome from `status`. The default `RLM_MAX_DEPTH` of 1 is enough:
+the root spawns workers and workers delegate to no one.
+
+**Eight concurrent workers per root session** is the declared ceiling. Prime Agent
+publishes no per-session child cap, so this is a policy number rather than a measured
+limit — which is exactly why it belongs in the bank, where it is a declared fact you can
+change:
+
+```json
+{
+  "cores_per_candidate": 1,
+  "measurement": "parallel",
+  "bank": [
+    {
+      "id": "prime-agent-rlm",
+      "kind": "agents",
+      "slots": 8,
+      "label": "Prime Agent RLM child sessions"
+    }
+  ],
+  "workers": {
+    "simple": { "model": "openai-codex/gpt-5.6-sol", "thinking_tokens": 4000 },
+    "standard": { "model": "openai-codex/gpt-5.6-sol", "thinking_tokens": 16000 },
+    "complex": { "model": "openai-codex/gpt-5.6-luna", "thinking_tokens": 32000 }
+  }
+}
+```
+
+Take the tier selectors from `await rlm.find_models()`. A model that is not an exact
+`provider/model` match fails the spawn instead of quietly falling back to another one.
+
+`rlm()` accepts only `name` and `model`, and rejects anything else rather than ignoring
+it, so `thinking_tokens` cannot be set per worker: children inherit the session's
+thinking level. Set it once at launch with `--thinking`, and read the tier budget as the
+intent the packet records.
+
+### The Improvement Loop
+
+Autoresearch does not drive itself. On Codex an official Goal re-enters the run each
+turn. Prime Agent splits that job across two mechanisms, and a third carries what the run
+learned into the next one.
+
+**Persistent goal — what the run is.** After `init` returns a run id, the model records
+the objective so it survives compaction, detach, and restart:
+
+```python
+await goal.create("autoresearch <run8>: drive <metric> from <baseline> to <target>")
+```
+
+Goal state is host-owned and outlives the terminal client. A run can also be seeded at
+launch:
+
+```bash
+prime-agent --goal "autoresearch: drive failure_count to 0" --thinking high
+```
+
+**Autonomous mode — what keeps it moving.** The goal stores the objective; autonomous
+mode decides whether to inject another continuation. Point its completion gate at the
+run's own status, so the session may not finish while the metric is short of target:
+
+```bash
+prime-agent --autonomous \
+  --autonomous-gate 'python3 <skill-root>/scripts/autoresearch.py status --repo <repo> | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin)[\"status\"] == \"complete\" else 1)"' \
+  --autonomous-max-continuations 50 \
+  --autonomous-max-turns 200 \
+  --autonomous-timeout-ms 21600000 \
+  "Resume the active autoresearch run"
+```
+
+The gate reads validated state rather than a claim: `status` replays `events.jsonl` and
+exits non-zero until the retained metric reaches the confirmed target. A run that is not
+initialized, or whose state fails validation, also fails the gate, so a broken run
+continues rather than being reported finished.
+
+Raise every limit you intend to allow. The defaults — 3 continuations, 12 turns, 80,000
+tokens, 30 minutes — are far below a real run, and the run stops at whichever binds
+first.
+
+**Refinement — what survives the run.** `decisions.md` is per-run memory and dies with
+the run. When a decision is a lesson about how to work rather than a fact about this
+repository, the model pushes it into the continual harness:
+
+```python
+await refine.run("workers that rewrite the parser before reading its tests always discard")
+```
+
+Refinement is scheduled, not immediate: it applies when the turn ends, then the harness
+rebuilds the system prompt and the run resumes. Keep it session-local unless the lesson
+is repository-independent, in which case pass `global_=True` to write it to
+`~/.prime/agent/harness/`.
+
+Harness state lives in the session artifact directory, so `refine` is registered only for
+a persisted session. Verified on 0.7.1: with `--no-session` the skill is absent from the
+session entirely and the run keeps only `decisions.md`. Do not disable the session for a
+run you want to learn from.
+
+### Verify
+
+From the target repository:
+
+```bash
+prime-agent -p "List your available skills by name."
+```
+
+`autoresearch` should appear. A valid installation then behaves exactly as it does on any
+other host: it inspects the repository without editing it, proposes a metric, target,
+scope, guard, and run mode, and waits for approval before creating
+`autoresearch-results/`.
+
 ## Skill Installer
 
 In Codex, run:
@@ -161,7 +309,7 @@ Use this when the skill should travel with one project:
 ```bash
 git clone https://github.com/leo-lilinxiao/codex-autoresearch.git
 mkdir -p your-project/.agents/skills
-cp -R autoresearch your-project/.agents/skills/autoresearch
+cp -R codex-autoresearch your-project/.agents/skills/autoresearch
 ```
 
 ## Manual User Install
@@ -171,7 +319,7 @@ Use this for all projects owned by the current user:
 ```bash
 git clone https://github.com/leo-lilinxiao/codex-autoresearch.git
 mkdir -p ~/.agents/skills
-cp -R autoresearch ~/.agents/skills/autoresearch
+cp -R codex-autoresearch ~/.agents/skills/autoresearch
 ```
 
 Do not install both a repository copy and a user copy unless you intentionally want two independently discovered versions.
@@ -181,7 +329,7 @@ Do not install both a repository copy and a user copy unless you intentionally w
 ```bash
 git clone https://github.com/leo-lilinxiao/codex-autoresearch.git
 mkdir -p your-project/.agents/skills
-ln -s "$(pwd)/autoresearch" your-project/.agents/skills/autoresearch
+ln -s "$(pwd)/codex-autoresearch" your-project/.agents/skills/autoresearch
 ```
 
 Edits to the source checkout are then visible through the symlink.

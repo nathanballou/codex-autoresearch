@@ -22,13 +22,13 @@ Concurrent subagent spawning is a tool inside your session, not a CLI subcommand
 the control plane cannot do it for you. Tool names and parameters change between
 releases — use whatever your own tool list exposes.
 
-| Need | Codex | Claude Code |
-|---|---|---|
-| concurrent workers | the native multi-agent primitive | several agent calls in one message |
-| notice a worker finished | subagent completion | task completion notification |
-| read-only helper | native, read-only | the read-only explore agent type |
-| continuity across turns | an official Goal | the conversation, plus task tracking |
-| concurrency ceiling | `max_concurrent_threads_per_session` in `config.toml` | measured at 16; declare it in the bank |
+| Need | Codex | Claude Code | Prime Agent |
+|---|---|---|---|
+| concurrent workers | the native multi-agent primitive | several agent calls in one message | `await rlm(packet, name=...)`, one call per packet |
+| notice a worker finished | subagent completion | task completion notification | `status`; `rlm()` returns an admission handle, never an answer |
+| read-only helper | native, read-only | the read-only explore agent type | none; a child inherits the parent's tools |
+| continuity across turns | an official Goal | the conversation, plus task tracking | a persistent goal, plus an autonomous gate |
+| concurrency ceiling | `max_concurrent_threads_per_session` in `config.toml` | measured at 16; declare it in the bank | 8 per root session; declare it in the bank |
 
 Sixteen concurrent Claude Code subagents were measured working: all sixteen held a
 60-second task at once, none rejected. Dispatch ramps at roughly 2 seconds per start,
@@ -42,6 +42,44 @@ the largest, which is where the reasoning is actually hard.
 
 If your host cannot spawn concurrent subagents, run `claim --count 1` in a loop. The
 state model is identical; only the concurrency is lost.
+
+## On Prime Agent
+
+Every command runs in the IPython kernel, so control-script calls go through `%%bash`
+cells and workers are RLM children. Three differences matter while the loop runs.
+
+`rlm()` admits a child and returns immediately; a worker's result never comes back
+through that call. Nothing here needs it to. The worker calls `finish` itself, and you
+read the outcome from `status` like any other host.
+
+`rlm()` accepts only `name` and `model`, and rejects anything else rather than ignoring
+it. A packet's `thinking_tokens` therefore cannot be set at spawn — children inherit the
+session's thinking level. Pass the tier `model` through as an exact `provider/model`
+selector from `await rlm.find_models()`; treat the token budget as the intent the packet
+records.
+
+Continuity is two mechanisms, not one. The persistent goal stores what the run is:
+
+```python
+await goal.create("autoresearch <run8>: drive <metric> from <baseline> to <target>")
+```
+
+Create it right after `init` returns the run id, and call `await goal.complete()` only
+once `status` reports `complete`. The `goal` skill creates a goal only when instructed
+explicitly; this skill's `Start` step is that instruction. The autonomous gate decides
+whether another continuation is injected, and the user configures it at launch.
+
+When you learn something that outlives this run — a tactic, a repeated failure, a worker
+role that keeps paying off — also push it into the harness:
+
+```python
+await refine.run("workers that rewrite the parser before reading its tests always discard")
+```
+
+Refinement is scheduled and applies when the turn ends; one request per turn is enough.
+It supplements `decisions.md`, which is still curated with `decide --add` and still dies
+with the run; it never replaces it. `refine` exists only in a persisted session, so treat
+its absence as a run started with `--no-session`, not as an error to work around.
 
 ## What you own, and what you must not do
 

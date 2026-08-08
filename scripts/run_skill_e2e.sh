@@ -26,13 +26,15 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/run_skill_e2e.sh foreground-smoke [--clean]
+  bash scripts/run_skill_e2e.sh prime-agent-smoke [--clean]
   bash scripts/run_skill_e2e.sh real-foreground [--clean]
 
 Modes:
-  foreground-smoke  Deterministic init/finish/complete run in a disposable installed skill repo.
-  real-foreground   Prepare a disposable repo and open the real Codex TUI for a human-driven Goal run.
+  foreground-smoke   Deterministic init/finish/complete run in a disposable installed skill repo.
+  prime-agent-smoke  Deterministic check of the Prime Agent install path and autonomous gate.
+  real-foreground    Prepare a disposable repo and open the real Codex TUI for a human-driven Goal run.
 
-The deterministic mode validates control-plane mechanics and runs in CI. The real mode requires
+The deterministic modes validate control-plane mechanics and run in CI. The real mode requires
 local Codex authentication and is never represented as mock/model validation.
 EOF
 }
@@ -66,11 +68,12 @@ copy_skill() {
 prepare_repo() {
   local fixture="$1"
   local temporary="$2"
+  local install="${3:-.agents/skills/autoresearch}"
   local repo="$temporary/repo"
   cp -R "$ROOT/tests/e2e-fixtures/$fixture" "$repo"
   find "$repo" -type d -name __pycache__ -prune -exec rm -rf {} +
   find "$repo" -type f -name '*.pyc' -delete
-  copy_skill "$repo/.agents/skills/autoresearch"
+  copy_skill "$repo/$install"
   git -C "$repo" init -b main >/dev/null
   git -C "$repo" config user.name e2e
   git -C "$repo" config user.email e2e@example.com
@@ -206,6 +209,82 @@ if subjects.count("autoresearch:") < expected:
 PY
 }
 
+documented_gate() {
+  local skill_root="$1"
+  local repo="$2"
+  python3 - "$ROOT/docs/INSTALL.md" "$skill_root" "$repo" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+doc, skill_root, repo = sys.argv[1:]
+# Test the gate the docs actually publish, so a documented command cannot rot silently.
+found = re.findall(r"--autonomous-gate '(.+)' \\\n", Path(doc).read_text(encoding="utf-8"))
+if len(found) != 1:
+    raise SystemExit(f"expected exactly one documented autonomous gate, found {len(found)}")
+print(found[0].replace("<skill-root>", skill_root).replace("<repo>", repo))
+PY
+}
+
+assert_gate() {
+  local gate="$1"
+  local expected="$2"
+  local observed=0
+  bash -c "$gate" >/dev/null 2>&1 || observed=$?
+  if [[ "$observed" -ne "$expected" ]]; then
+    echo "autonomous gate exited $observed, expected $expected" >&2
+    return 1
+  fi
+}
+
+run_prime_agent_smoke() {
+  require_tool python3
+  require_tool git
+  local temporary repo skill control gate
+  temporary="$(mktemp -d)"
+  repo="$(prepare_repo interactive_unittest_fix "$temporary" .prime/agent/skills/autoresearch)"
+  skill="$repo/.prime/agent/skills/autoresearch"
+  control="$skill/scripts/autoresearch.py"
+  gate="$(documented_gate "$skill" "$repo")"
+
+  assert_gate "$gate" 1
+
+  python3 "$control" init \
+    --repo "$repo" \
+    --goal "Reduce the unit-test failure count to zero" \
+    --scope src \
+    --metric-name failure_count \
+    --direction lower \
+    --verify "python3 scripts/score.py" \
+    --metric-key failure_count \
+    --target 0 \
+    --max-parallel bank \
+    --worktree-root "$temporary/worktrees" \
+    --lease-seconds 1800 \
+    --window 8 \
+    --min-per-role 1 \
+    --plateau-k 3 >/dev/null
+
+  assert_gate "$gate" 1
+
+  python3 - "$repo/src/math_utils.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "return a - b"
+if text.count(old) != 1:
+    raise SystemExit(f"expected exactly one fixture bug in {path}")
+path.write_text(text.replace(old, "return a + b"), encoding="utf-8")
+PY
+  python3 "$control" finish --repo "$repo" --description "correct integer addition" >/dev/null
+  assert_status "$control" "$repo" complete
+  assert_gate "$gate" 0
+  echo "prime-agent smoke: OK"
+  cleanup "$temporary"
+}
+
 run_real_foreground() {
   require_tool codex
   require_tool python3
@@ -249,6 +328,9 @@ print(status["iterations"])
 case "$MODE" in
   foreground-smoke)
     run_foreground_smoke
+    ;;
+  prime-agent-smoke)
+    run_prime_agent_smoke
     ;;
   real-foreground)
     run_real_foreground
