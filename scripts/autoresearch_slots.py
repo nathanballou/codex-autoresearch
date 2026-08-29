@@ -35,7 +35,15 @@ SLOT_KEYS = {
     "claimed_at",
     "lease_expires_at",
 }
-SLOT_STATES = {"idle", "preparing", "live", "measuring", "admitting", "broken"}
+SLOT_STATES = {
+    "idle",
+    "preparing",
+    "live",
+    "measuring",
+    "admitting",
+    "reporting",
+    "broken",
+}
 
 
 def slots_path(paths: Paths) -> Path:

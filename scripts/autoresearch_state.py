@@ -193,6 +193,7 @@ EVENT_FIELDS = {
         "verify_log",
         "guard_log",
     },
+    "candidate_reported": {"candidate", "analysis"},
     "blocked": {"reason", "head", "metric", "unresolved_candidates"},
     "complete": {"reason", "head", "metric", "unresolved_candidates"},
     "error": {
@@ -207,6 +208,157 @@ EVENT_FIELDS = {
     "resumed": {"note", "head", "metric"},
     "stopped": {"reason", "head", "metric", "unresolved_candidates"},
 }
+EVENT_OPTIONAL_FIELDS = {"candidate_resolved": {"report_required"}}
+
+ANALYSIS_KEYS = {
+    "schema_version",
+    "profiled_commit",
+    "measurement_source",
+    "observations",
+    "outcome_analysis",
+    "next_focus",
+    "limitations",
+}
+ANALYSIS_V2_KEYS = ANALYSIS_KEYS | {"diagnostic_confidence", "cause_chain"}
+OBSERVATION_KEYS = {"area", "before", "after", "unit", "effect"}
+NEXT_FOCUS_KEYS = {"area", "current_value", "unit", "why", "experiment"}
+CAUSE_KEYS = {"area", "role", "why"}
+
+
+def validate_analysis(payload: Any, *, source: str) -> dict[str, Any]:
+    """
+    Validate one measured candidate analysis.
+    Args:
+    payload: Parsed JSON value to validate.
+    source: Human-readable source used in errors.
+    Return: The validated analysis object.
+    """
+    if not isinstance(payload, dict):
+        raise AutoresearchError(f"{source} must contain a JSON object")
+    schema_version = payload.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in {1, 2}
+    ):
+        raise AutoresearchError(f"{source}.schema_version must be 1 or 2")
+    require_exact_keys(
+        payload,
+        required=ANALYSIS_V2_KEYS if schema_version == 2 else ANALYSIS_KEYS,
+        source=source,
+    )
+    for key in (
+        "profiled_commit",
+        "measurement_source",
+        "outcome_analysis",
+        "limitations",
+    ):
+        if not isinstance(payload[key], str) or not payload[key].strip():
+            raise AutoresearchError(f"{source}.{key} must be a non-empty string")
+    observations = payload["observations"]
+    if not isinstance(observations, list) or not observations:
+        raise AutoresearchError(f"{source}.observations must be a non-empty array")
+    for index, observation in enumerate(observations):
+        item_source = f"{source}.observations[{index}]"
+        if not isinstance(observation, dict):
+            raise AutoresearchError(f"{item_source} must be an object")
+        require_exact_keys(observation, required=OBSERVATION_KEYS, source=item_source)
+        for key in ("area", "unit"):
+            if not isinstance(observation[key], str) or not observation[key].strip():
+                raise AutoresearchError(f"{item_source}.{key} must be a non-empty string")
+        for key in ("before", "after"):
+            if not isinstance(observation[key], (int, float)) or isinstance(
+                observation[key], bool
+            ):
+                raise AutoresearchError(f"{item_source}.{key} must be a number")
+            parse_decimal(observation[key], field=f"{item_source}.{key}")
+        if not isinstance(observation["effect"], str) or observation["effect"] not in {
+            "improvement",
+            "regression",
+            "unchanged",
+        }:
+            raise AutoresearchError(
+                f"{item_source}.effect must be improvement, regression, or unchanged"
+            )
+    next_focus = payload["next_focus"]
+    if not isinstance(next_focus, dict):
+        raise AutoresearchError(f"{source}.next_focus must be an object")
+    require_exact_keys(next_focus, required=NEXT_FOCUS_KEYS, source=f"{source}.next_focus")
+    for key in ("area", "unit", "why", "experiment"):
+        if not isinstance(next_focus[key], str) or not next_focus[key].strip():
+            raise AutoresearchError(f"{source}.next_focus.{key} must be a non-empty string")
+    if not isinstance(next_focus["current_value"], (int, float)) or isinstance(
+        next_focus["current_value"], bool
+    ):
+        raise AutoresearchError(f"{source}.next_focus.current_value must be a number")
+    parse_decimal(
+        next_focus["current_value"], field=f"{source}.next_focus.current_value"
+    )
+    if not any(
+        observation["area"] == next_focus["area"]
+        and observation["unit"] == next_focus["unit"]
+        and parse_decimal(observation["after"], field="observation.after")
+        == parse_decimal(next_focus["current_value"], field="next_focus.current_value")
+        for observation in observations
+    ):
+        raise AutoresearchError(
+            f"{source}.next_focus must match one observation's area, after value, and unit"
+        )
+    if schema_version == 2:
+        confidence = payload["diagnostic_confidence"]
+        if not isinstance(confidence, str) or confidence not in {
+            "observed",
+            "inferred",
+            "hypothesis",
+            "unknown",
+        }:
+            raise AutoresearchError(
+                f"{source}.diagnostic_confidence must be observed, inferred, hypothesis, or unknown"
+            )
+        cause_chain = payload["cause_chain"]
+        if not isinstance(cause_chain, list) or not cause_chain:
+            raise AutoresearchError(f"{source}.cause_chain must be a non-empty array")
+        l_areas = [observation["area"] for observation in observations]
+        if len(l_areas) != len(set(l_areas)):
+            raise AutoresearchError(f"{source}.observation areas must be unique")
+        d_observations = {observation["area"]: observation for observation in observations}
+        for index, cause in enumerate(cause_chain):
+            item_source = f"{source}.cause_chain[{index}]"
+            if not isinstance(cause, dict):
+                raise AutoresearchError(f"{item_source} must be an object")
+            require_exact_keys(cause, required=CAUSE_KEYS, source=item_source)
+            for key in ("area", "why"):
+                if not isinstance(cause[key], str) or not cause[key].strip():
+                    raise AutoresearchError(f"{item_source}.{key} must be a non-empty string")
+            if cause["area"] not in d_observations:
+                raise AutoresearchError(
+                    f"{item_source}.area must reference a measured observation"
+                )
+            if not isinstance(cause["role"], str) or cause["role"] not in {
+                "improvement",
+                "regression",
+                "remaining_bottleneck",
+                "context",
+            }:
+                raise AutoresearchError(
+                    f"{item_source}.role must be improvement, regression, "
+                    "remaining_bottleneck, or context"
+                )
+            if cause["role"] in {"improvement", "regression"} and (
+                d_observations[cause["area"]]["effect"] != cause["role"]
+            ):
+                raise AutoresearchError(
+                    f"{item_source}.role must match the measured observation effect"
+                )
+        if (
+            cause_chain[-1]["role"] != "remaining_bottleneck"
+            or cause_chain[-1]["area"] != next_focus["area"]
+            or any(cause["role"] == "remaining_bottleneck" for cause in cause_chain[:-1])
+        ):
+            raise AutoresearchError(
+                f"{source}.cause_chain must end with next_focus as its only remaining_bottleneck"
+            )
+    return payload
 
 
 def validate_event(payload: Any, *, run_id: str, expected_seq: int, source: str) -> dict[str, Any]:
@@ -218,6 +370,7 @@ def validate_event(payload: Any, *, run_id: str, expected_seq: int, source: str)
     require_exact_keys(
         payload,
         required=EVENT_COMMON | EVENT_FIELDS[event_type],
+        optional=EVENT_OPTIONAL_FIELDS.get(event_type),
         source=source,
     )
     if payload["schema_version"] != SCHEMA_VERSION:
@@ -277,6 +430,12 @@ def validate_event(payload: Any, *, run_id: str, expected_seq: int, source: str)
             not isinstance(payload["guard_log"], str) or not payload["guard_log"]
         ):
             raise AutoresearchError(f"{source}.guard_log must be null or a non-empty string")
+        if "report_required" in payload and not isinstance(payload["report_required"], bool):
+            raise AutoresearchError(f"{source}.report_required must be a boolean")
+    if event_type == "candidate_reported":
+        if not isinstance(payload["candidate"], int) or payload["candidate"] <= 0:
+            raise AutoresearchError(f"{source}.candidate must be a positive integer")
+        validate_analysis(payload["analysis"], source=f"{source}.analysis")
     if event_type in {"blocked", "complete", "error", "stopped"}:
         if not isinstance(payload["reason"], str) or not payload["reason"].strip():
             raise AutoresearchError(f"{source}.reason must be a non-empty string")
@@ -355,6 +514,7 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
     iterations = 0
     started = 0
     unresolved: dict[int, dict[str, Any]] = {}
+    reporting: dict[int, dict[str, Any]] = {}
     status = "active"
     last_terminal: str | None = None
     unrolled_back_error = False
@@ -401,6 +561,12 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
             iterations += 1
             outcome = event["outcome"]
             reason = event["reason"]
+            if event.get("report_required", False):
+                if event["outcome"] == "failed":
+                    raise AutoresearchError(
+                        f"Candidate {candidate} failed and cannot require a report"
+                    )
+                reporting[candidate] = event
             if CANDIDATE_REASONS.get(reason) != outcome:
                 raise AutoresearchError(
                     f"Candidate {candidate} reason {reason!r} does not match outcome {outcome!r}"
@@ -464,7 +630,22 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
                         raise AutoresearchError(
                             f"Candidate {candidate} ran a guard for a non-improving trial"
                         )
+        elif event_type == "candidate_reported":
+            candidate = event["candidate"]
+            if candidate not in reporting:
+                raise AutoresearchError(
+                    f"Candidate {candidate} reported without a report-required resolution"
+                )
+            if event["analysis"]["profiled_commit"] != reporting[candidate]["trial_commit"]:
+                raise AutoresearchError(
+                    f"Candidate {candidate} analysis profiled_commit does not match its trial commit"
+                )
+            del reporting[candidate]
         elif event_type in TERMINAL_EVENTS:
+            if event_type != "error" and reporting:
+                raise AutoresearchError(
+                    f"{event_type} event cannot precede all candidate resolutions and reports"
+                )
             event_metric = parse_decimal(event["metric"], field=f"{event_type}.metric")
             if event_metric != metric:
                 raise AutoresearchError(
@@ -508,9 +689,13 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
 
     if status == "active":
         target = parse_decimal(run["target"], field="run.target")
-        if target_reached(metric, target, run["metric"]["direction"]):
+        if target_reached(metric, target, run["metric"]["direction"]) and not reporting:
             raise AutoresearchError("Active event history reached the target but lacks a complete event")
-        if run["max_candidates"] is not None and iterations >= run["max_candidates"]:
+        if (
+            run["max_candidates"] is not None
+            and iterations >= run["max_candidates"]
+            and not reporting
+        ):
             raise AutoresearchError(
                 "Active event history reached the candidate limit but lacks a stopped event"
             )
@@ -522,6 +707,7 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
         iterations=iterations,
         last_event=events[-1],
         unresolved=tuple(sorted(unresolved)),
+        reporting=tuple(sorted(reporting)),
     )
 
 
@@ -574,4 +760,10 @@ def status_payload(
         "last_event": state.last_event,
         "events_path": str(paths.events),
         "event_count": len(events),
+        "reporting_candidates": list(state.reporting),
+        "candidate_reports": [
+            {"candidate": event["candidate"], "analysis": event["analysis"]}
+            for event in events
+            if event["event"] == "candidate_reported"
+        ],
     }

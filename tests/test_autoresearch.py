@@ -446,6 +446,45 @@ class AutoresearchTest(unittest.TestCase):
         result = self.init("--metric-key", "value")
         self.assertEqual(3, result["baseline"])
 
+    def test_curated_decisions_allow_16_kilobytes(self) -> None:
+        (self.repo / "autoresearch" / "decisions.md").write_text(
+            "x" * 16384, encoding="utf-8"
+        )
+        self.git("add", "autoresearch/decisions.md")
+        self.git("commit", "-m", "large decisions")
+
+        self.assertEqual(3, self.init()["baseline"])
+
+    def test_curated_goal_rejects_more_than_16_kilobytes(self) -> None:
+        (self.repo / "autoresearch" / "goal.md").write_text(
+            "x" * 16385, encoding="utf-8"
+        )
+        self.git("add", "autoresearch/goal.md")
+        self.git("commit", "-m", "oversized goal")
+
+        completed = self.cli(
+            "init",
+            "--repo",
+            str(self.repo),
+            "--goal",
+            "Reduce the value to zero",
+            "--scope",
+            "src",
+            "--metric-name",
+            "value",
+            "--direction",
+            "lower",
+            "--verify",
+            "python3 score.py",
+            "--target",
+            "0",
+            *self.parallel_flags(),
+            check=False,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("16385 bytes, over the 16384-byte limit", completed.stderr)
+
     def test_corrupt_event_log_fails_instead_of_reconstructing(self) -> None:
         self.init()
         events = self.repo / "autoresearch-results" / "events.jsonl"

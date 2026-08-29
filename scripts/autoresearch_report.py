@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import html
 import io
+import re
 import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal
@@ -14,6 +15,9 @@ from typing import Any
 from urllib.parse import quote
 
 from autoresearch_core import RunState, decimal_json, parse_decimal, utc_now
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass(frozen=True)
@@ -38,7 +42,7 @@ def _single_line(value: Any) -> str:
     if value is None:
         return ""
     cleaned: list[str] = []
-    for character in str(value):
+    for character in ANSI_ESCAPE_RE.sub("", str(value)):
         codepoint = ord(character)
         if character in "\r\n\t":
             cleaned.append(" ")
@@ -56,6 +60,68 @@ def _metric(value: Any) -> str:
     return str(decimal_json(parsed))
 
 
+def analysis_description(
+    analysis: dict[str, Any], resolution: dict[str, Any]
+) -> str:
+    """
+    Render one measured analysis with its execution and frontier outcome.
+    Args:
+    analysis: Validated candidate analysis.
+    resolution: Matching candidate resolution event.
+    Return: A single-line human summary.
+    """
+    next_focus = analysis["next_focus"]
+    observations = analysis["observations"]
+    measured = "; ".join(
+        f"{item['area']}: {item['before']} -> {item['after']} "
+        f"{item['unit']} ({item['effect']})"
+        for item in observations
+    )
+    improvements = "; ".join(
+        f"{item['area']}: {item['before']} -> {item['after']} {item['unit']}"
+        for item in observations
+        if item["effect"] == "improvement"
+    ) or "none measured"
+    regressions = "; ".join(
+        f"{item['area']}: {item['before']} -> {item['after']} {item['unit']}"
+        for item in observations
+        if item["effect"] == "regression"
+    ) or "none measured"
+    if resolution["outcome"] == "admitted":
+        preserved = (
+            f"frontier retained {resolution['head']} at {resolution['retained_metric']}"
+        )
+    else:
+        preserved = (
+            f"frontier remained {resolution['head']} at {resolution['retained_metric']}; "
+            f"trial retained as {resolution['trial_commit']} on {resolution['trial_branch']}"
+        )
+    diagnostic = ""
+    if analysis["schema_version"] == 2:
+        d_observations = {item["area"]: item for item in observations}
+        chain = "; ".join(
+            f"{cause['role']} — {cause['area']} "
+            f"({d_observations[cause['area']]['before']} -> "
+            f"{d_observations[cause['area']]['after']} "
+            f"{d_observations[cause['area']]['unit']}): {cause['why']}"
+            for cause in analysis["cause_chain"]
+        )
+        diagnostic = (
+            f" Diagnostic confidence: {analysis['diagnostic_confidence']}. "
+            f"Causal chain: {chain}."
+        )
+    return (
+        f"Next: {next_focus['area']} at {next_focus['current_value']} "
+        f"{next_focus['unit']}. {next_focus['why']} Experiment: "
+        f"{next_focus['experiment']}. Execution: completed. Frontier outcome: "
+        f"{resolution['outcome']}. Preserved state: {preserved}. "
+        f"Improvements: {improvements}. Regressions: {regressions}."
+        f"{diagnostic} Source: {analysis['measurement_source']}. "
+        f"Measurements: {measured}. Analysis: {analysis['outcome_analysis']} "
+        f"Limitations: {analysis['limitations']}"
+    )
+
+
 def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
     """
     Project validated events into displayable rows.
@@ -69,6 +135,7 @@ def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
     # candidate id -> (base metric, start event), consumed when the candidate resolves so
     # whatever remains at the end is exactly the set of candidates still in flight.
     pending: dict[int, tuple[str, dict[str, Any]]] = {}
+    resolved: dict[int, dict[str, Any]] = {}
     for event in events:
         event_type = event["event"]
         if event_type == "baseline":
@@ -97,6 +164,7 @@ def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
         if event_type == "candidate_resolved":
             iteration = event["candidate"]
             base_metric, _ = pending.pop(iteration, ("", {}))
+            resolved[iteration] = event
             rows.append(
                 HistoryRow(
                     seq=event["seq"],
@@ -112,6 +180,29 @@ def history_rows(events: list[dict[str, Any]]) -> list[HistoryRow]:
                     verify_log=_single_line(event["verify_log"]),
                     guard=_single_line(event["guard"]),
                     guard_log=_single_line(event["guard_log"]),
+                    time=_single_line(event["time"]),
+                )
+            )
+            continue
+        if event_type == "candidate_reported":
+            analysis = event["analysis"]
+            rows.append(
+                HistoryRow(
+                    seq=event["seq"],
+                    iteration=event["candidate"],
+                    event="reported",
+                    previous_metric="",
+                    trial_metric="",
+                    retained_metric="",
+                    description=_single_line(
+                        analysis_description(analysis, resolved[event["candidate"]])
+                    ),
+                    trial_commit=_single_line(event["analysis"]["profiled_commit"]),
+                    trial_branch="",
+                    head="",
+                    verify_log="",
+                    guard="",
+                    guard_log="",
                     time=_single_line(event["time"]),
                 )
             )
@@ -230,6 +321,12 @@ def render_history_table(
         "  ".join("-" * width for width in widths),
     ]
     summary.extend(format_row(row) for row in cells)
+    reported = [row for row in rows if row.event == "reported"]
+    if reported:
+        summary.extend(["", "Candidate analysis"])
+        summary.extend(
+            f"Candidate {row.iteration}: {row.description}" for row in reported
+        )
     return "\n".join(summary) + "\n"
 
 
@@ -417,6 +514,7 @@ def render_html_report(
         "error",
         "stopped",
         "resumed",
+        "reported",
     }
     table_rows: list[str] = []
     for row in rows:

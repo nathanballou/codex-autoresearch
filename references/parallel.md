@@ -9,7 +9,8 @@ control plane never does.
 claim --count N   ->  N worker packets
 spawn N subagents ->  one per packet, concurrently, using your host's own primitive
 bind              ->  record each agent id
-(worker finishes) ->  slot frees
+(worker finishes) ->  slot enters reporting
+(worker reports)  ->  evidence persists; slot frees
 claim --count 1   ->  refill immediately; do not wait for the others
 ```
 
@@ -88,7 +89,7 @@ You curate two documents every worker receives:
 - `autoresearch/goal.md` — the overarching process goal. Not one run's target.
 - `autoresearch/decisions.md` — accumulated notes. Append with `decide --add`.
 
-Both are capped at 4 KB because they go into every packet. Edit them **only** through
+Both are capped at 16 KB because they go into every packet. Edit them **only** through
 `decide`; an unrecorded edit fails the next `finish` with an actionable error.
 
 Do not write the worker prompt yourself. `claim` returns a complete packet carrying
@@ -130,6 +131,15 @@ improve will serialize on the lock; the loser finds a moved frontier and is reba
 onto it and re-measured, because a candidate must improve against the frontier it
 will actually land on.
 
+`finish` returns the adjudicated commit and leaves the slot in `reporting`. The worker
+must profile that commit and call `report --candidate <id> --analysis-file <path>` with
+the packet's exact schema. The validated event records before/after component values,
+the outcome analysis, diagnostic confidence, an ordered causal chain tied to those
+measurements, and the measured next focus; only then does the grant return to the bank.
+Reports derive execution versus frontier outcome, improvements, regressions, preserved
+state, the remaining bottleneck, and the next experiment. Version-1 analysis remains
+valid. The file is UTF-8 JSON capped at 16 KB.
+
 A discarded candidate keeps its commit on `autoresearch/<run8>/c<NNNN>`. The frontier
 history contains only admitted work.
 
@@ -140,6 +150,8 @@ history contains only admitted work.
   lock whose holder is provably gone. It repairs nothing else.
 - `reap --candidate <id>` resolves an expired-lease candidate and frees its slot.
   Always explicit: a slow worker and a dead worker look identical from here.
+- Reaping a `reporting` slot records a terminal missing-report error. Any admitted
+  improvement remains on the frontier; missing analysis never rolls it back.
 - A worker returning after its candidate was reaped or abandoned is refused. Stale
   work can never be admitted.
 

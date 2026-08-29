@@ -57,6 +57,7 @@ from autoresearch_bank import (
 from autoresearch_packet import build_packet
 from autoresearch_slots import (
     acquire_admission_lock,
+    acquire_slots_lock,
     free_slot,
     held_grants,
     lease_expired,
@@ -65,6 +66,7 @@ from autoresearch_slots import (
     prepare_worktree,
     read_admission_lock,
     release_admission_lock,
+    release_slots_lock,
     save_slots,
     slots_path,
     unresolved_from,
@@ -83,6 +85,7 @@ from autoresearch_state import (
     append_event,
     load_context,
     status_payload,
+    validate_analysis,
     validate_run,
 )
 from autoresearch_report import render_history_table, render_history_tsv, render_html_report
@@ -164,9 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("--format", choices=["table", "tsv"], default="table")
 
     report_parser = subparsers.add_parser(
-        "report", help="Generate a self-contained static HTML report."
+        "report", help="Submit candidate analysis or generate a static HTML report."
     )
     add_repo_argument(report_parser)
+    report_parser.add_argument("--candidate", type=int)
+    report_parser.add_argument("--analysis-file")
 
     resume_parser = subparsers.add_parser("resume", help="Resume a stopped or blocked run.")
     add_repo_argument(resume_parser)
@@ -848,6 +853,7 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
             guard=guard,
             verify_log=relative_log_path(paths, verify_log),
             guard_log=relative_log_path(paths, guard_log),
+            report_required=True,
         )
         # Keep the in-memory log in step, or a following terminal event computes its
         # sequence number from a list that is already one event behind the file.
@@ -856,33 +862,34 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
             paths,
             run,
             args.candidate,
-            state="idle",
-            candidate=None,
-            role=None,
-            grant=None,
-            agent_ref=None,
-            claimed_at=None,
-            lease_expires_at=None,
+            state="reporting",
+            lease_expires_at=time.time() + run["parallel"]["lease_seconds"],
         )
         return event
 
     if not improved(trial_metric, base_metric, run["metric"]["direction"]):
-        resolve(
-            "discarded",
-            "no_improvement",
-            metric=trial_metric,
-            head=state.head,
-            guard="not_run",
-            guard_log=None,
-        )
-        return {
-            "status": "active",
-            "candidate": args.candidate,
-            "outcome": "discarded",
-            "reason": "no_improvement",
-            "trial_metric": decimal_json(trial_metric),
-            "retained_metric": decimal_json(state.metric),
-        }
+        acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
+        try:
+            paths, run, events, state = load_context(repo)
+            resolve(
+                "discarded",
+                "no_improvement",
+                metric=trial_metric,
+                head=state.head,
+                guard="not_run",
+                guard_log=None,
+            )
+            return {
+                "status": "reporting",
+                "candidate": args.candidate,
+                "outcome": "discarded",
+                "reason": "no_improvement",
+                "trial_metric": decimal_json(trial_metric),
+                "retained_metric": decimal_json(state.metric),
+                "trial_commit": trial_commit,
+            }
+        finally:
+            release_admission_lock(paths)
 
     update_slot(paths, run, args.candidate, state="admitting")
     acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
@@ -907,10 +914,11 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
                     guard_log=None,
                 )
                 return {
-                    "status": "active",
+                    "status": "reporting",
                     "candidate": args.candidate,
                     "outcome": "discarded",
                     "reason": "rebase_conflict",
+                    "trial_commit": trial_commit,
                 }
             admitted_commit = git_head(worktree)
             rebase_log = next_command_log(paths, args.candidate, "rebase-verify")
@@ -933,13 +941,15 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
                     head=frontier,
                     guard="not_run",
                     guard_log=None,
+                    rebased=admitted_commit,
                 )
                 return {
-                    "status": "active",
+                    "status": "reporting",
                     "candidate": args.candidate,
                     "outcome": "discarded",
                     "reason": "stale_no_improvement",
                     "trial_metric": decimal_json(measured),
+                    "trial_commit": admitted_commit,
                 }
 
         guard_status = "pass"
@@ -962,12 +972,14 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
                     head=frontier,
                     guard="fail",
                     guard_log=guard_log,
+                    rebased=admitted_commit,
                 )
                 return {
-                    "status": "active",
+                    "status": "reporting",
                     "candidate": args.candidate,
                     "outcome": "discarded",
                     "reason": "guard_failed",
+                    "trial_commit": admitted_commit,
                 }
 
         run_git(repo, "merge", "--ff-only", admitted_commit)
@@ -981,27 +993,14 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
             guard_log=guard_log,
             rebased=admitted_commit,
         )
-        status = "active"
-        target = parse_decimal(run["target"], field="run.target")
-        if target_reached(measured, target, run["metric"]["direction"]):
-            events.append(
-                append_event(
-                    paths, run, events,
-                    event="complete",
-                    reason="retained metric satisfies the target",
-                    head=admitted_commit,
-                    metric=decimal_json(measured),
-                    unresolved_candidates=unresolved_from(events),
-                )
-            )
-            status = "complete"
         return {
-            "status": status,
+            "status": "reporting",
             "candidate": args.candidate,
             "outcome": "admitted",
             "trial_metric": decimal_json(measured),
             "retained_metric": decimal_json(measured),
             "head": admitted_commit,
+            "trial_commit": admitted_commit,
         }
     finally:
         release_admission_lock(paths)
@@ -1012,6 +1011,10 @@ def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
     paths, run, events, state = load_context(repo)
     if state.status != "active":
         raise AutoresearchError(f"Cannot finish a candidate while run status is {state.status}")
+    if state.unresolved or state.reporting:
+        raise AutoresearchError(
+            "Cannot run a foreground finish while parallel in-flight candidates remain"
+        )
     if git_branch(repo) != run["branch"]:
         raise AutoresearchError(
             f"Run is pinned to branch {run['branch']}, current branch is {git_branch(repo)}"
@@ -1275,6 +1278,14 @@ def block_run(args: argparse.Namespace) -> dict[str, Any]:
         raise AutoresearchError("--reason cannot be empty")
     if state.status != "active":
         raise AutoresearchError(f"Cannot block a run whose status is {state.status}")
+    if state.reporting:
+        raise AutoresearchError(
+            "Cannot block while candidates owe measured reports; submit or reap them first"
+        )
+    if state.unresolved:
+        raise AutoresearchError(
+            "Cannot block while candidates are still in flight; resolve or reap them first"
+        )
     require_clean_repo(repo, expected_head=state.head, expected_branch=run["branch"])
     event = append_event(
         paths,
@@ -1309,6 +1320,7 @@ def parallel_status(repo: Path, paths: Paths, run: dict[str, Any], state: RunSta
         "grants_held": len(held),
         "live_by_role": live_roles(table),
         "unresolved_candidates": list(state.unresolved),
+        "reporting_candidates": list(state.reporting),
         "slots": [
             {
                 "slot": slot["slot"],
@@ -1422,6 +1434,122 @@ def generate_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def submit_candidate_report(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Validate and persist one candidate's measured analysis, then release its slot.
+    Args:
+    args: Parsed CLI arguments carrying the repository, candidate, and analysis file.
+    Return: The report receipt and resulting run status.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    if args.candidate <= 0:
+        raise AutoresearchError("--candidate must be a positive integer")
+    paths, run, _, _ = load_context(repo)
+    source = Path(args.analysis_file).expanduser().resolve()
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        raise AutoresearchError(f"Cannot read analysis file {source}: {exc}") from exc
+    if len(raw) > 16_384:
+        raise AutoresearchError(
+            f"Analysis file exceeds 16,384 bytes: {len(raw):,} bytes at {source}"
+        )
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise AutoresearchError(f"Analysis file must be UTF-8: {source}: {exc}") from exc
+    analysis = validate_analysis(parse_json(text, source=str(source)), source=str(source))
+    acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
+    try:
+        paths, run, events, state = load_context(repo)
+        if state.status != "active":
+            raise AutoresearchError(
+                f"Cannot report a candidate while run status is {state.status}"
+            )
+        if args.candidate not in state.reporting:
+            raise AutoresearchError(
+                f"Candidate {args.candidate} is not waiting for a measured report"
+            )
+        resolution = next(
+            event
+            for event in events
+            if event["event"] == "candidate_resolved"
+            and event["candidate"] == args.candidate
+        )
+        if analysis["profiled_commit"] != resolution["trial_commit"]:
+            raise AutoresearchError(
+                f"analysis.profiled_commit must be {resolution['trial_commit']}, "
+                f"got {analysis['profiled_commit']}"
+            )
+        acquire_slots_lock(paths)
+        try:
+            table = load_slots(paths, run)
+            slot = slot_for_candidate(table, args.candidate)
+            if slot["state"] != "reporting":
+                raise AutoresearchError(
+                    f"Candidate {args.candidate} slot must be reporting, got {slot['state']}"
+                )
+            reported = append_event(
+                paths,
+                run,
+                events,
+                event="candidate_reported",
+                candidate=args.candidate,
+                analysis=analysis,
+            )
+            events.append(reported)
+            release_slot(table, slot)
+            save_slots(paths, table)
+        finally:
+            release_slots_lock(paths)
+
+        status = state.status
+        if set(state.reporting) == {args.candidate} and not state.unresolved:
+            if target_reached(
+                state.metric,
+                parse_decimal(run["target"], field="run.target"),
+                run["metric"]["direction"],
+            ):
+                events.append(
+                    append_event(
+                        paths,
+                        run,
+                        events,
+                        event="complete",
+                        reason="retained metric satisfies the target",
+                        head=state.head,
+                        metric=decimal_json(state.metric),
+                        unresolved_candidates=unresolved_from(events),
+                    )
+                )
+                status = "complete"
+            elif (
+                run["max_candidates"] is not None
+                and state.iterations >= run["max_candidates"]
+            ):
+                events.append(
+                    append_event(
+                        paths,
+                        run,
+                        events,
+                        event="stopped",
+                        reason="configured candidate limit reached",
+                        head=state.head,
+                        metric=decimal_json(state.metric),
+                        unresolved_candidates=unresolved_from(events),
+                    )
+                )
+                status = "stopped"
+        return {
+            "status": status,
+            "candidate": args.candidate,
+            "reported": True,
+            "next_focus": analysis["next_focus"],
+        }
+    finally:
+        release_admission_lock(paths)
+
+
 def resume_run(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     paths, run, events, state = load_context(repo)
@@ -1430,6 +1558,10 @@ def resume_run(args: argparse.Namespace) -> dict[str, Any]:
         raise AutoresearchError("--note cannot be empty")
     if state.status == "complete":
         raise AutoresearchError("A completed run cannot be resumed; archive it and start a new goal")
+    if state.reporting:
+        raise AutoresearchError(
+            "A required candidate report is missing; archive this terminal run and start a new one"
+        )
     if run["max_candidates"] is not None and state.iterations >= run["max_candidates"]:
         raise AutoresearchError(
             "The configured candidate limit has been reached; archive this run and confirm a new limit"
@@ -1512,7 +1644,7 @@ def release_slot(table: dict[str, Any], slot: dict[str, Any]) -> None:
     )
 
 
-def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
+def claim_candidates_locked(args: argparse.Namespace) -> dict[str, Any]:
     """
     Claim up to --count slots and emit one worker packet for each.
     Args:
@@ -1527,6 +1659,16 @@ def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
     paths, run, events, state = load_context(repo)
     if state.status != "active":
         raise AutoresearchError(f"Cannot claim while run status is {state.status}")
+    if target_reached(
+        state.metric,
+        parse_decimal(run["target"], field="run.target"),
+        run["metric"]["direction"],
+    ):
+        raise AutoresearchError("The target was reached; wait for required candidate reports")
+    if run["max_candidates"] is not None and state.iterations >= run["max_candidates"]:
+        raise AutoresearchError(
+            "The candidate limit was reached; wait for required candidate reports"
+        )
     require_docs_match(repo, recorded_doc_digests(run, events))
 
     bank = load_bank(repo)
@@ -1659,6 +1801,26 @@ def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def claim_candidates(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Serialize slot reservations and their candidate-started events.
+    Args:
+    args: Parsed CLI arguments carrying the repository and claim request.
+    Return: Packets for the claimed candidates.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, _, _ = load_context(repo)
+    acquire_admission_lock(paths, run_id=run["run_id"], candidate=0)
+    try:
+        acquire_slots_lock(paths)
+        try:
+            return claim_candidates_locked(args)
+        finally:
+            release_slots_lock(paths)
+    finally:
+        release_admission_lock(paths)
+
+
 def bind_agent(args: argparse.Namespace) -> dict[str, Any]:
     """
     Record the host-assigned agent id for a claimed candidate.
@@ -1667,11 +1829,8 @@ def bind_agent(args: argparse.Namespace) -> dict[str, Any]:
     Return: Confirmation of the recorded reference.
     """
     repo = Path(args.repo).expanduser().resolve()
-    paths, run, events, state = load_context(repo)
-    table = load_slots(paths, run)
-    slot = slot_for_candidate(table, args.candidate)
-    slot["agent_ref"] = args.agent_ref
-    save_slots(paths, table)
+    paths, run, _, _ = load_context(repo)
+    update_slot(paths, run, args.candidate, agent_ref=args.agent_ref)
     return {
         "candidate": args.candidate,
         "agent_ref": args.agent_ref,
@@ -1690,16 +1849,13 @@ def extend_lease(args: argparse.Namespace) -> dict[str, Any]:
     Return: The new deadline.
     """
     repo = Path(args.repo).expanduser().resolve()
-    paths, run, events, state = load_context(repo)
-    table = load_slots(paths, run)
-    slot = slot_for_candidate(table, args.candidate)
+    paths, run, _, _ = load_context(repo)
     expires = time.time() + run["parallel"]["lease_seconds"]
-    slot["lease_expires_at"] = expires
-    save_slots(paths, table)
+    update_slot(paths, run, args.candidate, lease_expires_at=expires)
     return {"candidate": args.candidate, "lease_expires_at": expires}
 
 
-def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
+def abandon_candidate_locked(args: argparse.Namespace) -> dict[str, Any]:
     """
     Resolve a claimed candidate as failed without touching the frontier.
     Args:
@@ -1710,6 +1866,10 @@ def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
     paths, run, events, state = load_context(repo)
     table = load_slots(paths, run)
     slot = slot_for_candidate(table, args.candidate)
+    if slot["state"] == "reporting":
+        raise AutoresearchError(
+            f"Candidate {args.candidate} is already resolved; submit its measured report"
+        )
     event = append_event(
         paths,
         run,
@@ -1733,7 +1893,27 @@ def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
     return {"candidate": args.candidate, "outcome": "failed", "reason": event["reason"]}
 
 
-def reap_candidate(args: argparse.Namespace) -> dict[str, Any]:
+def abandon_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Serialize abandonment with every other event-log and slot mutation.
+    Args:
+    args: Parsed CLI arguments carrying the repository, candidate, and reason.
+    Return: The resolution receipt.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, _, _ = load_context(repo)
+    acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
+    try:
+        acquire_slots_lock(paths)
+        try:
+            return abandon_candidate_locked(args)
+        finally:
+            release_slots_lock(paths)
+    finally:
+        release_admission_lock(paths)
+
+
+def reap_candidate_locked(args: argparse.Namespace) -> dict[str, Any]:
     """
     Resolve a candidate whose lease lapsed, freeing its slot.
     Args:
@@ -1746,34 +1926,79 @@ def reap_candidate(args: argparse.Namespace) -> dict[str, Any]:
     """
     repo = Path(args.repo).expanduser().resolve()
     paths, run, events, state = load_context(repo)
-    table = load_slots(paths, run)
-    slot = slot_for_candidate(table, args.candidate)
-    if not lease_expired(slot, now=time.time()):
-        raise AutoresearchError(
-            f"Candidate {args.candidate} still holds a valid lease until "
-            f"{slot['lease_expires_at']}. Wait for it, or have the worker abandon it."
+    if state.status != "active":
+        raise AutoresearchError(f"Cannot reap a candidate while run status is {state.status}")
+    acquire_slots_lock(paths)
+    try:
+        table = load_slots(paths, run)
+        slot = slot_for_candidate(table, args.candidate)
+        if not lease_expired(slot, now=time.time()):
+            raise AutoresearchError(
+                f"Candidate {args.candidate} still holds a valid lease until "
+                f"{slot['lease_expires_at']}. Wait for it, or have the worker abandon it."
+            )
+        if slot["state"] != "reporting":
+            append_event(
+                paths,
+                run,
+                events,
+                event="candidate_resolved",
+                candidate=args.candidate,
+                outcome="failed",
+                reason="lease_expired",
+                description=f"lease expired while held by {slot['agent_ref'] or 'an unbound agent'}",
+                trial_metric=None,
+                retained_metric=decimal_json(state.metric),
+                trial_commit=None,
+                trial_branch=slot["branch"],
+                head=state.head,
+                guard="not_run",
+                verify_log=None,
+                guard_log=None,
+            )
+            release_slot(table, slot)
+            save_slots(paths, table)
+            return {"candidate": args.candidate, "outcome": "failed", "reason": "lease_expired"}
+
+        append_event(
+            paths,
+            run,
+            events,
+            event="error",
+            reason=f"Candidate {args.candidate} did not submit its required measured report",
+            head=state.head,
+            metric=decimal_json(state.metric),
+            trial_commit=None,
+            log=None,
+            unresolved_candidates=list(state.unresolved),
         )
-    append_event(
-        paths,
-        run,
-        events,
-        event="candidate_resolved",
-        candidate=args.candidate,
-        outcome="failed",
-        reason="lease_expired",
-        description=f"lease expired while held by {slot['agent_ref'] or 'an unbound agent'}",
-        trial_metric=None,
-        retained_metric=decimal_json(state.metric),
-        trial_commit=None,
-        trial_branch=slot["branch"],
-        head=state.head,
-        guard="not_run",
-        verify_log=None,
-        guard_log=None,
-    )
-    release_slot(table, slot)
-    save_slots(paths, table)
-    return {"candidate": args.candidate, "outcome": "failed", "reason": "lease_expired"}
+        for pending_slot in table["slots"]:
+            if pending_slot["candidate"] in state.reporting:
+                release_slot(table, pending_slot)
+        save_slots(paths, table)
+        return {
+            "candidate": args.candidate,
+            "outcome": "failed",
+            "reason": "missing_report",
+        }
+    finally:
+        release_slots_lock(paths)
+
+
+def reap_candidate(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Serialize lease resolution with every other event-log mutation.
+    Args:
+    args: Parsed CLI arguments carrying the repository and candidate.
+    Return: The resolution receipt.
+    """
+    repo = Path(args.repo).expanduser().resolve()
+    paths, run, _, _ = load_context(repo)
+    acquire_admission_lock(paths, run_id=run["run_id"], candidate=args.candidate)
+    try:
+        return reap_candidate_locked(args)
+    finally:
+        release_admission_lock(paths)
 
 
 def reconcile_run(args: argparse.Namespace) -> dict[str, Any]:
@@ -1808,7 +2033,7 @@ def reconcile_run(args: argparse.Namespace) -> dict[str, Any]:
         cleared_lock = lock
 
     divergence = sorted(
-        set(state.unresolved)
+        (set(state.unresolved) | set(state.reporting))
         ^ {slot["candidate"] for slot in table["slots"] if slot["candidate"] is not None}
     )
     save_slots(paths, table)
@@ -1920,7 +2145,15 @@ def main() -> int:
         print(show_history(args), end="")
         return 0
     elif args.command == "report":
-        output = generate_report(args)
+        if (args.candidate is None) != (args.analysis_file is None):
+            raise AutoresearchError(
+                "report requires both --candidate and --analysis-file, or neither"
+            )
+        output = (
+            submit_candidate_report(args)
+            if args.candidate is not None
+            else generate_report(args)
+        )
     elif args.command == "resume":
         output = resume_run(args)
     elif args.command == "claim":

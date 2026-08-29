@@ -114,7 +114,7 @@ $autoresearch export experiment history as TSV
 $autoresearch generate an HTML report
 ```
 
-History renders a terminal table from the fully validated event log. TSV is emitted on request for spreadsheets or scripts. The HTML command writes a self-contained snapshot to `autoresearch-results/report.html` with the metric trajectory, keep/discard timeline, commits, and log links.
+History renders a terminal table from the fully validated event log. Candidate rows also show execution versus frontier outcome, diagnostic confidence, measured improvements and regressions, preserved state, the causal chain, and the next focus after a parallel worker reports. TSV is emitted on request for spreadsheets or scripts. The HTML command writes a self-contained snapshot to `autoresearch-results/report.html` with the metric trajectory, keep/discard timeline, measured next focus, commits, and log links.
 
 These views never replace or update `events.jsonl`. Delete or regenerate the HTML report at any time; an active run requires a fresh report command to include later iterations.
 

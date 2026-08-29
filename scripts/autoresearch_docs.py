@@ -13,9 +13,8 @@ GOAL_FILE = "goal.md"
 DECISIONS_FILE = "decisions.md"
 COMPUTE_FILE = "compute.json"
 
-# Small on purpose. These are injected into every worker packet, so an unbounded
-# file would quietly consume the context the worker needs for its actual task.
-MAX_DOC_BYTES = 4096
+# Bounded because these are injected into every worker packet and share its context.
+MAX_DOC_BYTES = 16 * 1024
 
 
 def doc_path(repo: Path, name: str) -> Path:

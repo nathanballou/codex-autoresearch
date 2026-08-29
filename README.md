@@ -102,9 +102,17 @@ returns.
 | Admission | Serialized; a candidate whose base went stale is rebased and re-measured |
 | Liveness | Leases, because the control plane does not own worker processes |
 
-Every worker receives the same curated overarching goal and decisions, plus its own
-individual target. A host that cannot spawn concurrent subagents claims one slot at a
-time and degrades to sequential execution against the identical state model.
+Every worker receives the same curated overarching goal and decisions, capped at 16 KB
+each, plus its own individual target. It profiles the frontier before its change and the
+trial afterward, then reports the measured remaining bottleneck for an admitted run or
+the measured improvements and regressions for a discarded run. `finish` adjudicates the
+trial, but the slot remains in `reporting` until the worker submits that structured
+evidence (up to 16 KB). Status, history, and HTML retain the measured next focus. A host
+that cannot spawn concurrent subagents claims one slot at a time and degrades to
+sequential execution against the identical state model. Version-2 evidence also labels
+diagnostic confidence and orders measured causes, so reports distinguish execution
+success from frontier outcome and show improvements, regressions, preserved state,
+the remaining bottleneck, and the next experiment. Version-1 evidence stays readable.
 
 ## What Gets Confirmed
 

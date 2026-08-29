@@ -165,6 +165,17 @@ extend it first:
 
     python3 {control} heartbeat --repo {run["repo"]} --candidate {candidate}
 
+## Measured analysis
+
+Profile the current frontier before changing code. Use a profiler, analyzer,
+benchmark breakdown, or focused instrumentation appropriate to the goal, and record
+the command or data source, measured values, and units. The scalar metric alone is
+not a profile. Keep profiling-only artifacts out of the candidate diff.
+
+After making your focused change, rerun the same profiling after your change under
+the same conditions before calling `finish`. If existing tools do not expose a
+breakdown, create and run the smallest diagnostic measurement needed; do not guess.
+
 ## Finishing
 
 Make one focused change, then hand the candidate back. The control plane commits,
@@ -173,6 +184,61 @@ your own result.
 
     python3 {control} finish --repo {run["repo"]} --candidate {candidate} \\
       --description "<what you changed>"
+
+`finish` leaves your slot in `reporting`. Before replying to the main thread, write
+a UTF-8 JSON analysis file no larger than 16,384 bytes. The analysis must describe
+the exact `trial_commit` returned by `finish`. If `finish` rebased your change onto a
+new frontier, rerun the same profiling on that returned commit and use those results.
+Use this exact shape:
+
+    {{
+      "schema_version": 2,
+      "profiled_commit": "<trial_commit from finish>",
+      "measurement_source": "<profiling command or data source>",
+      "observations": [
+        {{"area": "<component>", "before": 0, "after": 0,
+          "unit": "<unit>", "effect": "improvement|regression|unchanged"}}
+      ],
+      "outcome_analysis": "<what changed and why the goal was or was not reached>",
+      "diagnostic_confidence": "observed|inferred|hypothesis|unknown",
+      "cause_chain": [
+        {{"area": "<area from observations>",
+          "role": "improvement|regression|remaining_bottleneck|context",
+          "why": "<how this measured area affected the outcome>"}}
+      ],
+      "next_focus": {{"area": "<largest remaining issue>", "current_value": 0,
+        "unit": "<unit>", "why": "<why hard data makes it next>",
+        "experiment": "<specific next experiment>"}},
+      "limitations": "<measurement limitations>"
+    }}
+
+Order `cause_chain` from the change's useful effect through any offsetting regression
+to the remaining bottleneck. Every area must name an `observations` entry. Use
+`observed` only when the measurements directly establish the explanation; otherwise
+label it `inferred`, `hypothesis`, or `unknown` rather than presenting it as fact.
+
+Submit it to persist the evidence and release your slot:
+
+    python3 {control} report --repo {run["repo"]} --candidate {candidate} \
+      --analysis-file <analysis.json>
+
+Use the `finish` receipt and persisted analysis in your final report to the main
+thread:
+
+- State the outcome, trial and retained metrics, target, and remaining gap.
+- Separate execution status from frontier outcome: an experiment that ran correctly
+  but was discarded is a completed experiment, not an execution failure.
+- Show the profiling command or data source and the before/after breakdown with each
+  measured value and unit.
+- State which improvements and regressions were measured, what frontier and trial
+  state was preserved, and the confidence level of the causal explanation.
+- If the candidate is admitted but misses the target, identify the largest remaining
+  measured contributor and recommend the next experiment that directly targets it.
+- If the candidate is discarded, analyze this run rather than the retained frontier:
+  quantify its improvements and regressions, explain what outweighed what, and say
+  where a retry of this direction should focus.
+- Give one recommended main-thread focus, the hard data that makes it the priority,
+  and a concrete next experiment.
 
 If you cannot make a meaningful change, say so instead of guessing:
 

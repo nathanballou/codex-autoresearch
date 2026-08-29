@@ -56,6 +56,7 @@ class RunState:
     iterations: int
     last_event: dict[str, Any]
     unresolved: tuple[int, ...]
+    reporting: tuple[int, ...]
 
 
 @dataclass(frozen=True)

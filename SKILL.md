@@ -88,7 +88,7 @@ Candidates run in parallel. Read `references/parallel.md` before your first clai
 4. Curate `decisions.md` with `decide --add` when you learn something every future
    worker needs. Never edit it by hand.
 
-Each worker finalizes its own candidate:
+Each worker resolves and reports its own candidate:
 
 ```bash
 python3 <skill-root>/scripts/autoresearch.py finish \
@@ -97,8 +97,15 @@ python3 <skill-root>/scripts/autoresearch.py finish \
 
 `finish` checks scope and Git provenance, commits and measures inside that
 candidate's worktree, rebases and re-measures if the frontier moved underneath it,
-runs the guard, admits a genuine improvement, and marks the run complete on target. A
-discarded candidate keeps its commit on its own branch and leaves the frontier alone.
+runs the guard, and admits a genuine improvement. The slot then stays in `reporting`
+until the worker submits the packet's measured JSON analysis with
+`report --candidate`; only the validated report frees the slot and allows terminal
+completion. A discarded candidate keeps its commit on its own branch and leaves the
+frontier alone. New reports separate completed execution from frontier outcome, label
+diagnostic confidence, and link an ordered causal chain to measured observations.
+History derives the measured improvements, regressions, preserved frontier/trial
+state, remaining bottleneck, and next experiment from that evidence. Version-1
+reports remain readable.
 
 Without `--candidate` the run degrades to one sequential candidate in the primary
 checkout, for hosts that cannot spawn concurrent subagents.
