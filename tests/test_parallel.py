@@ -782,6 +782,34 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual("complete", second_report["status"])
         self.assertEqual([], self.status()["parallel"]["unresolved_candidates"])
 
+    def test_in_flight_candidate_can_be_abandoned_after_target_is_reached(self) -> None:
+        self.init("--target", "20")
+        first, second = self.claim(2)
+        self.set_knob(first, "a", 0)
+
+        first_finish = json.loads(
+            self.cli(
+                "finish",
+                "--candidate", str(first["candidate"]),
+                "--description", "reach target",
+            ).stdout
+        )
+        first_report = self.submit_analysis(first_finish)
+        self.assertEqual("active", first_report["status"])
+
+        abandoned = json.loads(
+            self.cli(
+                "abandon",
+                "--candidate", str(second["candidate"]),
+                "--reason", "target reached elsewhere",
+            ).stdout
+        )
+
+        self.assertEqual("failed", abandoned["outcome"])
+        status = self.status()
+        self.assertEqual("complete", status["status"])
+        self.assertEqual([], status["parallel"]["unresolved_candidates"])
+
     def test_foreground_finish_is_rejected_while_candidate_reports_are_pending(self) -> None:
         self.init()
         packet = self.claim(1)[0]

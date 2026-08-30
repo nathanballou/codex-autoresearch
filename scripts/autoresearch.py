@@ -1912,8 +1912,28 @@ def abandon_candidate_locked(args: argparse.Namespace) -> dict[str, Any]:
         verify_log=None,
         guard_log=None,
     )
+    events.append(event)
     release_slot(table, slot)
     save_slots(paths, table)
+    if (
+        set(state.unresolved) == {args.candidate}
+        and not state.reporting
+        and target_reached(
+            state.metric,
+            parse_decimal(run["target"], field="run.target"),
+            run["metric"]["direction"],
+        )
+    ):
+        append_event(
+            paths,
+            run,
+            events,
+            event="complete",
+            reason="retained metric satisfies the target",
+            head=state.head,
+            metric=decimal_json(state.metric),
+            unresolved_candidates=[],
+        )
     return {"candidate": args.candidate, "outcome": "failed", "reason": event["reason"]}
 
 

@@ -693,7 +693,11 @@ def derive_state(run: dict[str, Any], events: list[dict[str, Any]]) -> RunState:
 
     if status == "active":
         target = parse_decimal(run["target"], field="run.target")
-        if target_reached(metric, target, run["metric"]["direction"]) and not reporting:
+        if (
+            target_reached(metric, target, run["metric"]["direction"])
+            and not unresolved
+            and not reporting
+        ):
             raise AutoresearchError("Active event history reached the target but lacks a complete event")
         if (
             run["max_candidates"] is not None
