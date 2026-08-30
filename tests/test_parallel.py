@@ -613,7 +613,7 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("admitted", json.loads(result.stdout)["outcome"])
 
-    def test_finish_rejects_candidate_authored_controller_event(self) -> None:
+    def test_finish_blocks_candidate_authored_controller_event(self) -> None:
         events_path = self.repo / "autoresearch-results" / "events.jsonl"
         (self.repo / "score.py").write_text(
             "import json\n"
@@ -648,8 +648,14 @@ class ParallelTest(unittest.TestCase):
         )
 
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("modified run.json or events.jsonl", result.stderr)
+        self.assertTrue(
+            "Metric command exited 1" in result.stderr
+            or "modified run.json or events.jsonl" in result.stderr,
+            result.stderr,
+        )
+        self.assertEqual("active", self.status()["status"])
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS sandbox-exec")
     def test_finish_terminates_lingering_metric_processes(self) -> None:
         events_path = self.repo / "autoresearch-results" / "events.jsonl"
         child = (
@@ -667,7 +673,8 @@ class ParallelTest(unittest.TestCase):
             "value = int(Path('src/a.txt').read_text().strip())\n"
             "if value == 4:\n"
             f"    subprocess.Popen([sys.executable, '-c', {child!r}], "
-            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+            "start_new_session=True)\n"
             "print(value + int(Path('src/b.txt').read_text().strip()) + "
             "int(Path('src/c.txt').read_text().strip()))\n",
             encoding="utf-8",
