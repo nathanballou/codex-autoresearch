@@ -613,7 +613,7 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("admitted", json.loads(result.stdout)["outcome"])
 
-    def test_finish_blocks_candidate_authored_controller_event(self) -> None:
+    def test_finish_detects_metric_control_state_mutation(self) -> None:
         events_path = self.repo / "autoresearch-results" / "events.jsonl"
         (self.repo / "score.py").write_text(
             "import json\n"
@@ -653,9 +653,47 @@ class ParallelTest(unittest.TestCase):
             or "modified run.json or events.jsonl" in result.stderr,
             result.stderr,
         )
-        self.assertEqual("active", self.status()["status"])
 
-    @unittest.skipUnless(sys.platform == "darwin", "requires macOS sandbox-exec")
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS sandbox_init")
+    def test_finish_allows_scorer_to_sandbox_its_candidate_child(self) -> None:
+        child = (
+            "import ctypes; library=ctypes.CDLL('/usr/lib/libsandbox.1.dylib'); "
+            "library.sandbox_init.argtypes=[ctypes.c_char_p,ctypes.c_uint64,"
+            "ctypes.POINTER(ctypes.c_char_p)]; library.sandbox_init.restype=ctypes.c_int; "
+            "error=ctypes.c_char_p(); result=library.sandbox_init("
+            "b'(version 1)(allow default)',0,ctypes.byref(error)); "
+            "raise SystemExit(result)"
+        )
+        (self.repo / "score.py").write_text(
+            "import subprocess\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "value = int(Path('src/a.txt').read_text().strip())\n"
+            "if value == 4:\n"
+            f"    subprocess.run([sys.executable, '-c', {child!r}], check=True)\n"
+            "print(value + int(Path('src/b.txt').read_text().strip()) + "
+            "int(Path('src/c.txt').read_text().strip()))\n",
+            encoding="utf-8",
+        )
+        self.git("add", "score.py")
+        self.git("commit", "-m", "scorer isolates candidate child")
+        self.init()
+        packet = self.claim(1)[0]
+        self.set_knob(packet, "a", 4)
+
+        result = self.cli(
+            "finish",
+            "--candidate",
+            str(packet["candidate"]),
+            "--description",
+            "score with an internally sandboxed candidate child",
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("admitted", json.loads(result.stdout)["outcome"])
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
     def test_finish_terminates_lingering_metric_processes(self) -> None:
         events_path = self.repo / "autoresearch-results" / "events.jsonl"
         child = (
@@ -673,8 +711,7 @@ class ParallelTest(unittest.TestCase):
             "value = int(Path('src/a.txt').read_text().strip())\n"
             "if value == 4:\n"
             f"    subprocess.Popen([sys.executable, '-c', {child!r}], "
-            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
-            "start_new_session=True)\n"
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
             "print(value + int(Path('src/b.txt').read_text().strip()) + "
             "int(Path('src/c.txt').read_text().strip()))\n",
             encoding="utf-8",

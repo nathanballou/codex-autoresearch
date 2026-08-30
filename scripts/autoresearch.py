@@ -437,7 +437,6 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
             cwd=repo,
             timeout_seconds=args.timeout_seconds,
             log_path=next_command_log(paths, 0, "baseline-verify"),
-            denied_write_paths=[paths.run, paths.events],
         )
         require_no_initialized_state(
             paths,
@@ -459,7 +458,6 @@ def initialize_run(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=repo,
                 timeout_seconds=args.timeout_seconds,
                 log_path=next_command_log(paths, 0, "baseline-guard"),
-                denied_write_paths=[paths.run, paths.events],
             )
             guard_log = guard_result.log_path
             require_no_initialized_state(
@@ -751,7 +749,6 @@ def measure_in(
             timeout_seconds=run["timeout_seconds"],
             log_path=log_path,
             environment=grant_environment(grant),
-            denied_write_paths=[paths.run, paths.events],
         )
         require_control_state_unchanged(
             paths,
@@ -982,7 +979,6 @@ def finish_claimed_candidate(args: argparse.Namespace) -> dict[str, Any]:
                 timeout_seconds=run["timeout_seconds"],
                 log_path=guard_log,
                 environment=grant_environment(grant),
-                denied_write_paths=[paths.run, paths.events],
             )
             guard_status = "pass" if guard_result.returncode == 0 else "fail"
             if guard_status == "fail":
@@ -1103,7 +1099,6 @@ def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
             cwd=repo,
             timeout_seconds=run["timeout_seconds"],
             log_path=verify_log,
-            denied_write_paths=[paths.run, paths.events],
         )
         require_control_state_unchanged(
             paths,
@@ -1157,7 +1152,6 @@ def finish_candidate(args: argparse.Namespace) -> dict[str, Any]:
                     cwd=repo,
                     timeout_seconds=run["timeout_seconds"],
                     log_path=guard_log,
-                    denied_write_paths=[paths.run, paths.events],
                 )
                 require_control_state_unchanged(
                     paths,

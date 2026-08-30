@@ -10,7 +10,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -477,21 +476,11 @@ def run_command(
     timeout_seconds: int,
     log_path: Path,
     environment: dict[str, str] | None = None,
-    denied_write_paths: list[Path] | None = None,
 ) -> CommandResult:
-    launch_command: str | list[str] = command
-    use_shell = True
-    if denied_write_paths and sys.platform == "darwin":
-        denied = " ".join(
-            f"(literal {json.dumps(str(path.resolve()))})" for path in denied_write_paths
-        )
-        profile = f"(version 1)\n(allow default)\n(deny file-write* {denied})\n"
-        launch_command = ["sandbox-exec", "-p", profile, "/bin/sh", "-c", command]
-        use_shell = False
     started = time.monotonic()
     popen_kwargs: dict[str, Any] = {
         "cwd": cwd,
-        "shell": use_shell,
+        "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
     }
@@ -503,7 +492,7 @@ def run_command(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen(launch_command, **popen_kwargs)
+    process = subprocess.Popen(command, **popen_kwargs)
     try:
         stdout_bytes, stderr_bytes = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as timeout_error:
