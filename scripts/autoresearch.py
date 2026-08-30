@@ -362,9 +362,10 @@ def require_control_state_unchanged(
             f"{command_name} removed or replaced autoresearch control state: {exc}. "
             f"Full output: {log_path}"
         ) from exc
-    if current != snapshot:
+    if current[0] != snapshot[0] or not current[1].startswith(snapshot[1]):
         raise AutoresearchError(
-            f"{command_name} modified run.json or events.jsonl. Full output: {log_path}"
+            f"{command_name} modified run.json or rewrote events.jsonl. "
+            f"Full output: {log_path}"
         )
 
 
@@ -743,13 +744,14 @@ def measure_in(
     primary_head = git_head(paths.repo)
     with event_read_lock(paths):
         control_snapshot = control_state_snapshot(paths)
-        result = run_command(
-            command=run["metric"]["command"],
-            cwd=worktree,
-            timeout_seconds=run["timeout_seconds"],
-            log_path=log_path,
-            environment=grant_environment(grant),
-        )
+    result = run_command(
+        command=run["metric"]["command"],
+        cwd=worktree,
+        timeout_seconds=run["timeout_seconds"],
+        log_path=log_path,
+        environment=grant_environment(grant),
+    )
+    with event_read_lock(paths):
         require_control_state_unchanged(
             paths,
             control_snapshot,

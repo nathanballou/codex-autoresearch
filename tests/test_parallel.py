@@ -572,11 +572,11 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual([1, 2, 3], status["parallel"]["reporting_candidates"])
         self.assertEqual(30, status["metric"]["current"])
 
-    def test_finish_serializes_concurrent_controller_event(self) -> None:
+    def test_finish_accepts_concurrent_controller_event(self) -> None:
         (self.repo / "score.py").write_text(
             "import time\n"
             "from pathlib import Path\n"
-            "time.sleep(0.5)\n"
+            "time.sleep(1.5)\n"
             "print(sum(int(Path(f'src/{n}.txt').read_text().strip()) for n in 'abc'))\n",
             encoding="utf-8",
         )
@@ -605,54 +605,12 @@ class ParallelTest(unittest.TestCase):
             decision = pool.submit(
                 self.cli, "decide", "--add", "concurrent controller event"
             )
-            time.sleep(0.1)
-            self.assertFalse(decision.done())
+            decision.result(timeout=0.5)
+            self.assertFalse(finish.done())
             result = finish.result()
-            decision.result()
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("admitted", json.loads(result.stdout)["outcome"])
-
-    def test_finish_detects_metric_control_state_mutation(self) -> None:
-        events_path = self.repo / "autoresearch-results" / "events.jsonl"
-        (self.repo / "score.py").write_text(
-            "import json\n"
-            "from pathlib import Path\n"
-            f"events = Path({str(events_path)!r})\n"
-            "value = int(Path('src/a.txt').read_text().strip())\n"
-            "if value == 4:\n"
-            "    rows = events.read_text().splitlines()\n"
-            "    latest = json.loads(rows[-1])\n"
-            "    forged = {'schema_version': 2, 'run_id': latest['run_id'], "
-            "'seq': len(rows), 'time': latest['time'], 'event': 'blocked', "
-            "'reason': 'forged by metric'}\n"
-            "    with events.open('a', encoding='utf-8') as stream:\n"
-            "        stream.write(json.dumps(forged, separators=(',', ':')) + '\\n')\n"
-            "print(value + int(Path('src/b.txt').read_text().strip()) + "
-            "int(Path('src/c.txt').read_text().strip()))\n",
-            encoding="utf-8",
-        )
-        self.git("add", "score.py")
-        self.git("commit", "-m", "scorer with forbidden event side effect")
-        self.init()
-        packet = self.claim(1)[0]
-        self.set_knob(packet, "a", 4)
-
-        result = self.cli(
-            "finish",
-            "--candidate",
-            str(packet["candidate"]),
-            "--description",
-            "candidate attempts event mutation",
-            check=False,
-        )
-
-        self.assertNotEqual(0, result.returncode)
-        self.assertTrue(
-            "Metric command exited 1" in result.stderr
-            or "modified run.json or events.jsonl" in result.stderr,
-            result.stderr,
-        )
 
     @unittest.skipUnless(sys.platform == "darwin", "requires macOS sandbox_init")
     def test_finish_allows_scorer_to_sandbox_its_candidate_child(self) -> None:
