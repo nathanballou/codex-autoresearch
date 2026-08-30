@@ -83,6 +83,7 @@ from autoresearch_docs import (
 from autoresearch_state import (
     SCHEMA_VERSION,
     append_event,
+    event_read_lock,
     load_context,
     status_payload,
     validate_analysis,
@@ -740,35 +741,51 @@ def measure_in(
     treating that as this command's doing would fail candidates at random.
     """
     primary_head = git_head(paths.repo)
-    control_snapshot = control_state_snapshot(paths)
-    result = run_command(
-        command=run["metric"]["command"],
-        cwd=worktree,
-        timeout_seconds=run["timeout_seconds"],
-        log_path=log_path,
-        environment=grant_environment(grant),
-    )
-    require_control_state_unchanged(
-        paths, control_snapshot, command_name=label, log_path=log_path
-    )
-    require_command_preserved_repository(
-        worktree,
-        expected_head=expected_head,
-        expected_branch=branch,
-        command_name=label,
-        log_path=log_path,
-    )
-    primary_dirty = working_paths(paths.repo)
-    if primary_dirty:
-        raise AutoresearchError(
-            f"{label} left changes in the primary checkout: {', '.join(primary_dirty)}. "
-            f"Full output: {log_path}"
+    with event_read_lock(paths):
+        control_snapshot = control_state_snapshot(paths)
+        result = run_command(
+            command=run["metric"]["command"],
+            cwd=worktree,
+            timeout_seconds=run["timeout_seconds"],
+            log_path=log_path,
+            environment=grant_environment(grant),
         )
-    if frontier_is_pinned and git_head(paths.repo) != primary_head:
-        raise AutoresearchError(
-            f"{label} moved the primary repository from {primary_head} to "
-            f"{git_head(paths.repo)}. Full output: {log_path}"
+        require_control_state_unchanged(
+            paths,
+            control_snapshot,
+            command_name=label,
+            log_path=log_path,
         )
+        require_command_preserved_repository(
+            worktree,
+            expected_head=expected_head,
+            expected_branch=branch,
+            command_name=label,
+            log_path=log_path,
+        )
+    postflight_lock = not frontier_is_pinned
+    if postflight_lock:
+        acquire_admission_lock(
+            paths,
+            run_id=run["run_id"],
+            candidate=0,
+            wait_seconds=float(run["timeout_seconds"]),
+        )
+    try:
+        primary_dirty = working_paths(paths.repo)
+        if primary_dirty:
+            raise AutoresearchError(
+                f"{label} left changes in the primary checkout: {', '.join(primary_dirty)}. "
+                f"Full output: {log_path}"
+            )
+        if frontier_is_pinned and git_head(paths.repo) != primary_head:
+            raise AutoresearchError(
+                f"{label} moved the primary repository from {primary_head} to "
+                f"{git_head(paths.repo)}. Full output: {log_path}"
+            )
+    finally:
+        if postflight_lock:
+            release_admission_lock(paths)
     return parse_metric_output(result, json_key=run["metric"]["json_key"])
 
 
@@ -2084,24 +2101,31 @@ def record_decision(args: argparse.Namespace) -> dict[str, Any]:
     Return: Receipt naming the note and the new decisions digest.
     """
     repo = Path(args.repo).expanduser().resolve()
-    paths, run, events, state = load_context(repo)
-    if state.status not in {"active", "blocked", "stopped"}:
-        raise AutoresearchError(f"Cannot record a decision while run status is {state.status}")
-    note, digest = append_decision(repo, paths, args.add)
-    event = append_event(
-        paths,
-        run,
-        events,
-        event="decision",
-        note=note,
-        decisions_sha256=digest,
-    )
-    return {
-        "status": state.status,
-        "note": event["note"],
-        "decisions_sha256": digest,
-        "instruction": "Future candidates receive this note in their worker packet.",
-    }
+    paths, run, _, _ = load_context(repo)
+    acquire_admission_lock(paths, run_id=run["run_id"], candidate=0)
+    try:
+        paths, run, events, state = load_context(repo)
+        if state.status not in {"active", "blocked", "stopped"}:
+            raise AutoresearchError(
+                f"Cannot record a decision while run status is {state.status}"
+            )
+        note, digest = append_decision(repo, paths, args.add)
+        event = append_event(
+            paths,
+            run,
+            events,
+            event="decision",
+            note=note,
+            decisions_sha256=digest,
+        )
+        return {
+            "status": state.status,
+            "note": event["note"],
+            "decisions_sha256": digest,
+            "instruction": "Future candidates receive this note in their worker packet.",
+        }
+    finally:
+        release_admission_lock(paths)
 
 
 def archive_run(args: argparse.Namespace) -> dict[str, Any]:

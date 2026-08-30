@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import fcntl
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,7 @@ from autoresearch_core import (
 
 SCHEMA_VERSION = 2
 TERMINAL_EVENTS = {"blocked", "complete", "error", "stopped"}
+EVENT_LOCK_FILE = "events.lock"
 
 
 RUN_KEYS = {
@@ -718,21 +722,59 @@ def load_context(repo: Path | str) -> tuple[Paths, dict[str, Any], list[dict[str
     return paths, run, events, state
 
 
+@contextmanager
+def event_read_lock(paths: Paths) -> Iterator[None]:
+    """
+    Prevent controller event writes while a metric command is running.
+    Args:
+    paths: Resolved run paths.
+    Return: Context manager yielding while a shared event lock is held.
+    """
+    with (paths.root / EVENT_LOCK_FILE).open("a+", encoding="utf-8") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def event_write_lock(paths: Paths) -> Iterator[None]:
+    """
+    Give one controller process exclusive access to the event log.
+    Args:
+    paths: Resolved run paths.
+    Return: Context manager yielding while an exclusive event lock is held.
+    """
+    with (paths.root / EVENT_LOCK_FILE).open("a+", encoding="utf-8") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 def append_event(paths: Paths, run: dict[str, Any], events: list[dict[str, Any]], **fields: Any) -> dict[str, Any]:
-    event = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": run["run_id"],
-        "seq": len(events),
-        "time": utc_now(),
-        **fields,
-    }
-    validate_event(
-        event,
-        run_id=run["run_id"],
-        expected_seq=len(events),
-        source="new event",
-    )
-    append_json_line(paths.events, event)
+    with event_write_lock(paths):
+        current_events = load_events(paths, run) if paths.events.exists() else []
+        if current_events != events:
+            raise AutoresearchError(
+                "Event log changed after controller state was loaded; retry the command"
+            )
+        event = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": run["run_id"],
+            "seq": len(events),
+            "time": utc_now(),
+            **fields,
+        }
+        validate_event(
+            event,
+            run_id=run["run_id"],
+            expected_seq=len(events),
+            source="new event",
+        )
+        append_json_line(paths.events, event)
     return event
 
 

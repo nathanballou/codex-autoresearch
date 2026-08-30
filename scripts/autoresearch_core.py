@@ -527,6 +527,12 @@ def run_command(
             f"Command timed out after {timeout_seconds}s: {command}{suffix}. "
             f"Full output: {log_path}"
         )
+    termination_error = None
+    if process_group_alive(process.pid):
+        try:
+            terminate_process_tree(process)
+        except AutoresearchError as exc:
+            termination_error = str(exc)
     duration = time.monotonic() - started
     stdout, stderr, encoding_errors = _record_command_output(
         command=command,
@@ -537,7 +543,13 @@ def run_command(
         stderr_bytes=stderr_bytes,
         timed_out=False,
         log_path=log_path,
+        termination_error=termination_error,
     )
+    if termination_error is not None:
+        raise AutoresearchError(
+            f"Command left a process tree that could not be terminated: {termination_error}. "
+            f"Full output: {log_path}"
+        )
     if encoding_errors:
         raise AutoresearchError(
             f"Command produced non-UTF-8 output ({'; '.join(encoding_errors)}): {command}. "

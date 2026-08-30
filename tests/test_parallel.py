@@ -3,9 +3,11 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -570,6 +572,187 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual([1, 2, 3], status["parallel"]["reporting_candidates"])
         self.assertEqual(30, status["metric"]["current"])
 
+    def test_finish_serializes_concurrent_controller_event(self) -> None:
+        (self.repo / "score.py").write_text(
+            "import time\n"
+            "from pathlib import Path\n"
+            "time.sleep(0.5)\n"
+            "print(sum(int(Path(f'src/{n}.txt').read_text().strip()) for n in 'abc'))\n",
+            encoding="utf-8",
+        )
+        self.git("add", "score.py")
+        self.git("commit", "-m", "slow scorer")
+        self.init()
+        packet = self.claim(1)[0]
+        self.set_knob(packet, "a", 4)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            finish = pool.submit(
+                self.cli,
+                "finish",
+                "--candidate",
+                str(packet["candidate"]),
+                "--description",
+                "lower a during concurrent decision",
+                check=False,
+            )
+            for _ in range(100):
+                if self.status()["parallel"]["slots"][0]["state"] == "measuring":
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("candidate did not enter measuring state")
+            decision = pool.submit(
+                self.cli, "decide", "--add", "concurrent controller event"
+            )
+            time.sleep(0.1)
+            self.assertFalse(decision.done())
+            result = finish.result()
+            decision.result()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("admitted", json.loads(result.stdout)["outcome"])
+
+    def test_finish_rejects_candidate_authored_controller_event(self) -> None:
+        events_path = self.repo / "autoresearch-results" / "events.jsonl"
+        (self.repo / "score.py").write_text(
+            "import json\n"
+            "from pathlib import Path\n"
+            f"events = Path({str(events_path)!r})\n"
+            "value = int(Path('src/a.txt').read_text().strip())\n"
+            "if value == 4:\n"
+            "    rows = events.read_text().splitlines()\n"
+            "    latest = json.loads(rows[-1])\n"
+            "    forged = {'schema_version': 2, 'run_id': latest['run_id'], "
+            "'seq': len(rows), 'time': latest['time'], 'event': 'blocked', "
+            "'reason': 'forged by metric'}\n"
+            "    with events.open('a', encoding='utf-8') as stream:\n"
+            "        stream.write(json.dumps(forged, separators=(',', ':')) + '\\n')\n"
+            "print(value + int(Path('src/b.txt').read_text().strip()) + "
+            "int(Path('src/c.txt').read_text().strip()))\n",
+            encoding="utf-8",
+        )
+        self.git("add", "score.py")
+        self.git("commit", "-m", "scorer with forbidden event side effect")
+        self.init()
+        packet = self.claim(1)[0]
+        self.set_knob(packet, "a", 4)
+
+        result = self.cli(
+            "finish",
+            "--candidate",
+            str(packet["candidate"]),
+            "--description",
+            "candidate attempts event mutation",
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("modified run.json or events.jsonl", result.stderr)
+
+    def test_finish_terminates_lingering_metric_processes(self) -> None:
+        events_path = self.repo / "autoresearch-results" / "events.jsonl"
+        child = (
+            "import json, time; from pathlib import Path; time.sleep(1); "
+            f"p=Path({str(events_path)!r}); rows=p.read_text().splitlines(); "
+            "latest=json.loads(rows[-1]); forged={'schema_version':2,"
+            "'run_id':latest['run_id'],'seq':len(rows),'time':latest['time'],"
+            "'event':'blocked','reason':'late forged event'}; "
+            "p.open('a').write(json.dumps(forged,separators=(',',':'))+'\\n')"
+        )
+        (self.repo / "score.py").write_text(
+            "import subprocess\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "value = int(Path('src/a.txt').read_text().strip())\n"
+            "if value == 4:\n"
+            f"    subprocess.Popen([sys.executable, '-c', {child!r}], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "print(value + int(Path('src/b.txt').read_text().strip()) + "
+            "int(Path('src/c.txt').read_text().strip()))\n",
+            encoding="utf-8",
+        )
+        self.git("add", "score.py")
+        self.git("commit", "-m", "scorer with lingering child")
+        self.init()
+        packet = self.claim(1)[0]
+        self.set_knob(packet, "a", 4)
+
+        result = self.cli(
+            "finish",
+            "--candidate",
+            str(packet["candidate"]),
+            "--description",
+            "candidate launches lingering child",
+            check=False,
+        )
+        time.sleep(1.2)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("active", self.status()["status"])
+
+    def test_concurrent_decisions_keep_unique_event_sequences(self) -> None:
+        self.init()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(
+                pool.map(
+                    lambda note: self.cli("decide", "--add", note, check=False),
+                    ("first concurrent decision", "second concurrent decision"),
+                )
+            )
+
+        self.assertTrue(all(result.returncode == 0 for result in results), results)
+        events = [
+            json.loads(line)
+            for line in (
+                self.repo / "autoresearch-results" / "events.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(list(range(len(events))), [event["seq"] for event in events])
+
+    def test_measurement_postflight_waits_for_concurrent_admission(self) -> None:
+        initialized = self.init()
+        packet = self.claim(1)[0]
+        self.set_knob(packet, "a", 4)
+        lock = self.repo / "autoresearch-results" / "admission.lock"
+        lock.write_text(
+            json.dumps(
+                {
+                    "run_id": initialized["run_id"],
+                    "pid": os.getpid(),
+                    "candidate": 99,
+                    "acquired_at": "2026-08-30T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.repo / "src" / "b.txt").write_text("9\n", encoding="utf-8")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            finish = pool.submit(
+                self.cli,
+                "finish",
+                "--candidate",
+                str(packet["candidate"]),
+                "--description",
+                "lower a while another admission completes",
+                check=False,
+            )
+            for _ in range(100):
+                if self.status()["parallel"]["slots"][0]["state"] == "measuring":
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("candidate did not enter measuring state")
+            time.sleep(0.1)
+            (self.repo / "src" / "b.txt").write_text("10\n", encoding="utf-8")
+            lock.unlink()
+            result = finish.result()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("admitted", json.loads(result.stdout)["outcome"])
+
     def test_in_flight_candidate_can_resolve_after_target_is_reached(self) -> None:
         self.init("--target", "20")
         first, second = self.claim(2)
@@ -764,6 +947,55 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual(17, result["trial_metric"])
         self.assertEqual(17, self.status()["metric"]["current"])
         self.assertNotIn("Revert", self.git("log", "--format=%s").stdout)
+
+    def test_decision_waits_for_stale_candidate_remeasurement(self) -> None:
+        rebase_started = Path(self.temp.name) / "rebase-started"
+        (self.repo / "score.py").write_text(
+            "import time\n"
+            "from pathlib import Path\n"
+            "total = sum(int(Path(f'src/{n}.txt').read_text().strip()) for n in 'abc')\n"
+            f"marker = Path({str(rebase_started)!r})\n"
+            "if total == 17:\n"
+            "    marker.write_text('started')\n"
+            "time.sleep(0.5)\n"
+            "print(total)\n",
+            encoding="utf-8",
+        )
+        self.git("add", "score.py")
+        self.git("commit", "-m", "slow scorer")
+        self.init()
+        first, second = self.claim(2)
+        self.set_knob(first, "a", 4)
+        self.set_knob(second, "b", 3)
+        self.finish_and_report(first, "lower a")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            finish = pool.submit(
+                self.cli,
+                "finish",
+                "--candidate",
+                str(second["candidate"]),
+                "--description",
+                "lower b during concurrent decision",
+                check=False,
+            )
+            for _ in range(200):
+                if rebase_started.exists():
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("candidate did not enter stale remeasurement")
+            decision = pool.submit(
+                self.cli, "decide", "--add", "decision during stale remeasurement"
+            )
+            time.sleep(0.1)
+            self.assertFalse(decision.done())
+            result = finish.result()
+            decision.result()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual("admitted", receipt["outcome"])
 
     def test_parallel_finishes_serialize_on_the_admission_lock(self) -> None:
         self.init()
