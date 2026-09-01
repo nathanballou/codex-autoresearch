@@ -51,17 +51,7 @@ copy_skill() {
   mkdir -p "$destination/references" "$destination/scripts" "$destination/agents"
   cp "$ROOT/SKILL.md" "$destination/SKILL.md"
   cp "$ROOT/references/"*.md "$destination/references/"
-  cp \
-    "$ROOT/scripts/autoresearch.py" \
-    "$ROOT/scripts/autoresearch_core.py" \
-    "$ROOT/scripts/autoresearch_report.py" \
-    "$ROOT/scripts/autoresearch_state.py" \
-    "$ROOT/scripts/autoresearch_docs.py" \
-    "$ROOT/scripts/autoresearch_bank.py" \
-    "$ROOT/scripts/autoresearch_allocator.py" \
-    "$ROOT/scripts/autoresearch_slots.py" \
-    "$ROOT/scripts/autoresearch_packet.py" \
-    "$destination/scripts/"
+  cp "$ROOT/scripts/"autoresearch*.py "$destination/scripts/"
   cp "$ROOT/agents/openai.yaml" "$destination/agents/openai.yaml"
 }
 

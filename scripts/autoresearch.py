@@ -1522,45 +1522,8 @@ def submit_candidate_report(args: argparse.Namespace) -> dict[str, Any]:
         finally:
             release_slots_lock(paths)
 
-        status = state.status
-        if set(state.reporting) == {args.candidate} and not state.unresolved:
-            if target_reached(
-                state.metric,
-                parse_decimal(run["target"], field="run.target"),
-                run["metric"]["direction"],
-            ):
-                events.append(
-                    append_event(
-                        paths,
-                        run,
-                        events,
-                        event="complete",
-                        reason="retained metric satisfies the target",
-                        head=state.head,
-                        metric=decimal_json(state.metric),
-                        unresolved_candidates=unresolved_from(events),
-                    )
-                )
-                status = "complete"
-            elif (
-                run["max_candidates"] is not None
-                and state.iterations >= run["max_candidates"]
-            ):
-                events.append(
-                    append_event(
-                        paths,
-                        run,
-                        events,
-                        event="stopped",
-                        reason="configured candidate limit reached",
-                        head=state.head,
-                        metric=decimal_json(state.metric),
-                        unresolved_candidates=unresolved_from(events),
-                    )
-                )
-                status = "stopped"
         return {
-            "status": status,
+            "status": close_if_terminal(paths, run, events, state, resolving=args.candidate),
             "candidate": args.candidate,
             "reported": True,
             "next_focus": analysis["next_focus"],
@@ -1642,6 +1605,53 @@ def slot_for_candidate(table: dict[str, Any], candidate: int) -> dict[str, Any]:
         f"Candidate {candidate} does not hold a slot. It was never claimed, or it "
         f"was already resolved."
     )
+
+
+def close_if_terminal(
+    paths: Paths,
+    run: dict[str, Any],
+    events: list[dict[str, Any]],
+    state: RunState,
+    *,
+    resolving: int,
+) -> str:
+    """
+    Append complete or stopped once the last outstanding candidate has been closed out.
+    Args:
+    paths: Resolved run paths.
+    run: Validated run configuration.
+    events: In-memory event list, already carrying this candidate's closing event.
+    state: Run state as loaded before that closing event.
+    resolving: Candidate whose report, abandonment, or reap just closed it.
+    Return: The resulting run status.
+
+    Every closeout path shares this because replay refuses an active history whose
+    target or candidate limit is met with nothing in flight. A reap or abandon that
+    freed the last slot without closing the run left status unreadable.
+    """
+    if (set(state.unresolved) | set(state.reporting)) - {resolving}:
+        return state.status
+    iterations = sum(event["event"] == "candidate_resolved" for event in events)
+    target = parse_decimal(run["target"], field="run.target")
+    if target_reached(state.metric, target, run["metric"]["direction"]):
+        closing, reason = "complete", "retained metric satisfies the target"
+    elif run["max_candidates"] is not None and iterations >= run["max_candidates"]:
+        closing, reason = "stopped", "configured candidate limit reached"
+    else:
+        return state.status
+    events.append(
+        append_event(
+            paths,
+            run,
+            events,
+            event=closing,
+            reason=reason,
+            head=state.head,
+            metric=decimal_json(state.metric),
+            unresolved_candidates=unresolved_from(events),
+        )
+    )
+    return closing
 
 
 def release_slot(table: dict[str, Any], slot: dict[str, Any]) -> None:
@@ -1915,25 +1925,7 @@ def abandon_candidate_locked(args: argparse.Namespace) -> dict[str, Any]:
     events.append(event)
     release_slot(table, slot)
     save_slots(paths, table)
-    if (
-        set(state.unresolved) == {args.candidate}
-        and not state.reporting
-        and target_reached(
-            state.metric,
-            parse_decimal(run["target"], field="run.target"),
-            run["metric"]["direction"],
-        )
-    ):
-        append_event(
-            paths,
-            run,
-            events,
-            event="complete",
-            reason="retained metric satisfies the target",
-            head=state.head,
-            metric=decimal_json(state.metric),
-            unresolved_candidates=[],
-        )
+    close_if_terminal(paths, run, events, state, resolving=args.candidate)
     return {"candidate": args.candidate, "outcome": "failed", "reason": event["reason"]}
 
 
@@ -1982,26 +1974,29 @@ def reap_candidate_locked(args: argparse.Namespace) -> dict[str, Any]:
                 f"{slot['lease_expires_at']}. Wait for it, or have the worker abandon it."
             )
         if slot["state"] != "reporting":
-            append_event(
-                paths,
-                run,
-                events,
-                event="candidate_resolved",
-                candidate=args.candidate,
-                outcome="failed",
-                reason="lease_expired",
-                description=f"lease expired while held by {slot['agent_ref'] or 'an unbound agent'}",
-                trial_metric=None,
-                retained_metric=decimal_json(state.metric),
-                trial_commit=None,
-                trial_branch=slot["branch"],
-                head=state.head,
-                guard="not_run",
-                verify_log=None,
-                guard_log=None,
+            events.append(
+                append_event(
+                    paths,
+                    run,
+                    events,
+                    event="candidate_resolved",
+                    candidate=args.candidate,
+                    outcome="failed",
+                    reason="lease_expired",
+                    description=f"lease expired while held by {slot['agent_ref'] or 'an unbound agent'}",
+                    trial_metric=None,
+                    retained_metric=decimal_json(state.metric),
+                    trial_commit=None,
+                    trial_branch=slot["branch"],
+                    head=state.head,
+                    guard="not_run",
+                    verify_log=None,
+                    guard_log=None,
+                )
             )
             release_slot(table, slot)
             save_slots(paths, table)
+            close_if_terminal(paths, run, events, state, resolving=args.candidate)
             return {"candidate": args.candidate, "outcome": "failed", "reason": "lease_expired"}
 
         append_event(

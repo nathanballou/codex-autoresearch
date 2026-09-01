@@ -69,16 +69,7 @@ grep -q 'allow_implicit_invocation: false' "$ROOT/agents/openai.yaml" || {
   exit 1
 }
 
-python3 -m py_compile \
-  "$ROOT/scripts/autoresearch.py" \
-  "$ROOT/scripts/autoresearch_core.py" \
-  "$ROOT/scripts/autoresearch_report.py" \
-  "$ROOT/scripts/autoresearch_state.py" \
-  "$ROOT/scripts/autoresearch_docs.py" \
-  "$ROOT/scripts/autoresearch_bank.py" \
-  "$ROOT/scripts/autoresearch_allocator.py" \
-  "$ROOT/scripts/autoresearch_slots.py" \
-  "$ROOT/scripts/autoresearch_packet.py"
+python3 -m py_compile "$ROOT/scripts/"autoresearch*.py
 python3 -m unittest discover -s "$ROOT/tests" -p 'test_structure.py' -q
 
 echo "Skill structure valid: $skill_bytes-byte SKILL.md, 3 references, 9 runtime modules."

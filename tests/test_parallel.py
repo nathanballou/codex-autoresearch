@@ -810,6 +810,46 @@ class ParallelTest(unittest.TestCase):
         self.assertEqual("complete", status["status"])
         self.assertEqual([], status["parallel"]["unresolved_candidates"])
 
+    def test_in_flight_candidate_can_be_reaped_after_target_is_reached(self) -> None:
+        self.init("--target", "20", lease="1")
+        first, second = self.claim(2)
+        self.set_knob(first, "a", 0)
+        first_finish = json.loads(
+            self.cli(
+                "finish",
+                "--candidate", str(first["candidate"]),
+                "--description", "reach target",
+            ).stdout
+        )
+        self.assertEqual("active", self.submit_analysis(first_finish)["status"])
+        subprocess.run([sys.executable, "-c", "import time; time.sleep(2)"], check=True)
+
+        reaped = json.loads(self.cli("reap", "--candidate", str(second["candidate"])).stdout)
+
+        self.assertEqual("lease_expired", reaped["reason"])
+        status = self.status()
+        self.assertEqual("complete", status["status"])
+        self.assertEqual([], status["parallel"]["unresolved_candidates"])
+
+    def test_abandoning_the_last_candidate_at_the_limit_stops_the_run(self) -> None:
+        self.init("--max-candidates", "2")
+        first, second = self.claim(2)
+        self.set_knob(first, "a", 5)
+        first_finish = json.loads(
+            self.cli(
+                "finish",
+                "--candidate", str(first["candidate"]),
+                "--description", "improve a",
+            ).stdout
+        )
+        self.assertEqual("active", self.submit_analysis(first_finish)["status"])
+
+        self.cli("abandon", "--candidate", str(second["candidate"]), "--reason", "out of ideas")
+
+        status = self.status()
+        self.assertEqual("stopped", status["status"])
+        self.assertEqual(25, status["metric"]["current"])
+
     def test_foreground_finish_is_rejected_while_candidate_reports_are_pending(self) -> None:
         self.init()
         packet = self.claim(1)[0]
